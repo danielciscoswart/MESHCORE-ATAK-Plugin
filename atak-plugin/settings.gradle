@@ -1,3 +1,0 @@
-// Separate Gradle root so the JDK test script never configures the ATAK plugin.
-rootProject.name = 'meshcore-atak-plugin'
-include ':app'

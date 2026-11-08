@@ -1,0 +1,72 @@
+// Local SDK mode uses takdev.plugin from local.properties.
+// Pipeline mode uses -Ptakrepo.url and -Ptakrepo.user. This file does not
+// contain a repository password or a default tak.gov login.
+
+buildscript {
+    def readLocal = { String key ->
+        def localFile = file('local.properties')
+        if (!localFile.isFile()) {
+            return null
+        }
+        def parsed = new Properties()
+        def reader = localFile.newReader('UTF-8')
+        try {
+            parsed.load(reader)
+        } finally {
+            reader.close()
+        }
+        return parsed.getProperty(key)
+    }
+    def prop = { String key ->
+        if (project.hasProperty(key) && project.property(key) != null) {
+            return project.property(key).toString()
+        }
+        return readLocal(key)
+    }
+
+    def takrepoUrl = prop('takrepo.url')
+    def mavenMode = takrepoUrl != null && takrepoUrl.trim().length() > 0
+    ext.TAKDEV_MAVEN_MODE = mavenMode
+
+    repositories {
+        google()
+        mavenCentral()
+        if (mavenMode) {
+            maven {
+                url takrepoUrl
+                credentials {
+                    username prop('takrepo.user') ?: ''
+                    password prop('takrepo.password') ?: ''
+                }
+            }
+        }
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.13.0'
+        if (mavenMode) {
+            def repoUser = prop('takrepo.user')
+            if (repoUser == null || repoUser.trim().length() == 0) {
+                throw new GradleException('takrepo.url is set but takrepo.user is empty. This build does not invent credentials.')
+            }
+            // ATAK 5.6 requires takdev 3.+ and, if pinned, 3.5.3 or newer.
+            classpath 'com.atakmap.gradle:atak-gradle-takdev:3.+'
+        } else {
+            def takdevPath = prop('takdev.plugin')
+            if (takdevPath == null || !new File(takdevPath).isFile()) {
+                throw new GradleException('Local mode needs takdev.plugin in local.properties. Pipeline mode needs -Ptakrepo.url and -Ptakrepo.user supplied by the service. Do not commit either value.')
+            }
+            classpath files(takdevPath)
+        }
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
+}

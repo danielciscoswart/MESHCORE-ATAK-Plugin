@@ -8,5 +8,5 @@ local.properties
 android_keystore
 sdk/
 sdk-*/
-atak-plugin/.gradle/
-atak-plugin/app/build/
+.gradle/
+app/build/

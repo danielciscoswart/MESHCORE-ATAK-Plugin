@@ -1,0 +1,7 @@
+# Copy to local.properties next to gradlew. Never commit that copy.
+# Local SDK mode uses only these three paths. Do not set takrepo.url here.
+# The pipeline supplies takrepo.url and takrepo.user when it builds. This
+# tree does not contain those values.
+sdk.dir=/absolute/path/to/android-sdk
+sdkPath=/absolute/path/to/ATAK-CIV-5.6.0.26-SDK
+takdev.plugin=/absolute/path/to/ATAK-CIV-5.6.0.26-SDK/atak-gradle-takdev.jar

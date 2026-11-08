@@ -1,6 +1,9 @@
 # ATAK loads the class named in assets/plugin.xml by reflection.
-# Do not add -repackageclasses. The SDK's proguard-release-keep.txt is applied
-# by takdev from the local SDK during preReleaseBuild. It is not copied here.
+# The 5.6 build page says a repackageclasses line, when present, must name the
+# plugin. The kept entry class stays on its original name so discovery still
+# matches plugin.xml. The SDK keep file is applied by takdev and is not copied.
+
+-repackageclasses atakplugin.MeshCoreAtak
 
 -keep class dev.meshcore.atak.host.MeshCoreAtakPlugin {
     public <init>(gov.tak.api.plugin.IServiceController);

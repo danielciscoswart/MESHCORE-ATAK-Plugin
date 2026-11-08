@@ -31,26 +31,28 @@ Do not copy those into this tree.
 
 1. Unpack the source zip (or use this git checkout) so `atak-plugin/settings.gradle` is at the project root of that directory.
 2. Install JDK 17 and the public Android SDK with platform 36. That Android SDK is not the ATAK SDK.
-3. Copy `atak-plugin/local.properties.example` to `atak-plugin/local.properties`.
+3. Copy `local.properties.example` to `local.properties` beside `gradlew`.
 4. Set absolute paths:
    - `sdk.dir` — Android SDK
    - `sdkPath` — unzipped ATAK-CIV 5.6.0.26 SDK directory
    - `takdev.plugin` — `atak-gradle-takdev.jar` inside that directory
 5. Leave `takrepo.url` unset. Do not put a username or password in `local.properties`.
-6. Point `takDebugKeyFile` at a debug keystore that stays on this machine. Do not use a path inside the git tree, and do not commit the SDK's bundled `android_keystore`. Retail TAK Product Center signing is a separate decision and is not configured here.
-7. From `atak-plugin`, with Gradle 8.14.3 and JDK 17:
+6. Do not set a keystore property for this unsigned `assembleCivRelease`. Retail or pipeline signing is a later decision and is not part of this build.
+7. From the directory that contains `gradlew`, with JDK 17:
 
 ```sh
-gradle --no-daemon :app:assembleRelease
-cd ..
-./scripts/check-unsigned-release.sh atak-plugin/app/build/outputs/apk/release/app-release-unsigned.apk
+./gradlew --no-daemon assembleCivRelease
+```
+
+The flavor `civ` is real. The previous unsigned APK was `assembleRelease` without that flavor, from commit `856a81d`. This civ variant has not been assembled. The likely output, not yet confirmed, is `app/build/outputs/apk/civ/release/app-civ-release-unsigned.apk`. After it exists, from the repository root:
+
+```sh
+./scripts/check-unsigned-release.sh app/build/outputs/apk/civ/release/app-civ-release-unsigned.apk
 ```
 
 The checker needs `aapt2` from Android SDK build-tools (`ANDROID_HOME` or `AAPT2`). It does not treat a missing parser as success, and it does not grep the compiled manifest as plain text.
 
-There is no `civ` flavor. The variants are `debug` and `release`. Do not run `:app:assembleDebug` for this package: a debug assemble can be signed with the automatic debug key. Do not set `takDebugKeyFile`. Release has no `signingConfig`. `takdevLint` requires `minifyEnabled true` and `android.bundle.storeArchive.enable=false`. Both are set. JNI packaging uses the legacy extractor because that is another takdev 3.x check; this project has no native libraries. Do not skip `takdevLint`. The SDK keep file stays on the SDK machine and is applied by takdev's `preReleaseBuild` step. Commit `856a81d` did produce an unsigned release APK. Measured size and hash are in `docs/BUILD_PROVENANCE.md`. That file is not in git. A debug signature would not make it load in retail ATAK.
-
-`atak-plugin/app/build.gradle` defines `isDevKitEnabled()` before `atak-takdev-plugin` is applied. It returns false unless `takrepo.url` is set, and `takrepoUser` / `takrepoPassword` default to empty strings. Do not set `takrepo.url`. The local `takdev.plugin` jar stays on the classpath from `atak-plugin/build.gradle`. A configuration run of commit `90503e6` failed with `Could not find method isDevKitEnabled()` and then reported a missing `compileSdk` because the `android` block never finished. This change has not been compiled against the SDK in this environment.
+Do not run `assembleDebug`. A debug package can pick up an automatic debug key, and a debug signature is not a retail ATAK install. Do not set `takDebugKeyFile`. Release has no `signingConfig`. `takdevLint` stays enabled. `minifyEnabled` is true and `android.bundle.storeArchive.enable` is false. JNI packaging is legacy because takdev checks it; there is no NDK version and no native code. The SDK keep file stays on the SDK machine. `isDevKitEnabled()` is false unless `takrepo.url` is set. Leave that URL unset for a local SDK build. The three paths in `local.properties` are `sdk.dir`, `sdkPath`, and `takdev.plugin`.
 
 8. The APK, if the compile succeeds, is an unsigned-or-locally-debug-signed developer build. It has not been loaded into ATAK in this project. A retail ATAK install still needs the Product Center pipeline. Do not install it from this repository's instructions onto a phone as a finished plugin. The pane's MeshCore chat box is the supported outbound chat control. The GeoChat checkbox is experimental and default off.
 

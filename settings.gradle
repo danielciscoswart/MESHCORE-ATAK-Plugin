@@ -1,0 +1,3 @@
+// Zip root name and this name are what a pipeline uses for APK names.
+rootProject.name = 'meshcore-atak-plugin'
+include ':app'
