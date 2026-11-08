@@ -322,6 +322,10 @@ public final class Engine {
                         + "current MeshCore companion firmware rejects payloads above 165");
     }
 
+    public boolean hasSelectedChannel() {
+        return selected != null;
+    }
+
     public Companion.ChannelView channel(int index) {
         return channels.get(index);
     }

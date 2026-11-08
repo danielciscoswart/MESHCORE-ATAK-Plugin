@@ -46,7 +46,9 @@ gradle assembleCivDebug
 
 There is no Gradle wrapper jar in this tree, so the SDK is not pulled in by a wrapper download from tak.gov. `assembleCivDebug` is the variant name used by takdev. If the local plugin uses a different variant name, use the one the template prints.
 
-8. The APK, if the compile succeeds, is an unsigned-or-locally-debug-signed developer build. It has not been loaded into ATAK in this project. A retail ATAK install still needs the Product Center pipeline. Do not install it from this repository's instructions onto a phone as a finished plugin.
+`atak-plugin/app/build.gradle` defines `isDevKitEnabled()` before `atak-takdev-plugin` is applied. It returns false unless `takrepo.url` is set, and `takrepoUser` / `takrepoPassword` default to empty strings. Do not set `takrepo.url`. The local `takdev.plugin` jar stays on the classpath from `atak-plugin/build.gradle`. A configuration run of commit `90503e6` failed with `Could not find method isDevKitEnabled()` and then reported a missing `compileSdk` because the `android` block never finished. This change has not been compiled against the SDK in this environment.
+
+8. The APK, if the compile succeeds, is an unsigned-or-locally-debug-signed developer build. It has not been loaded into ATAK in this project. A retail ATAK install still needs the Product Center pipeline. Do not install it from this repository's instructions onto a phone as a finished plugin. The pane's MeshCore chat box is the supported outbound chat control. The GeoChat checkbox is experimental and default off.
 
 ## What compile success does not prove
 

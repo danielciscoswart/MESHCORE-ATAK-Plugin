@@ -74,8 +74,9 @@ No row is field-verified. "Tests" means `./scripts/test.sh` only.
 
 ## Release blockers that are still true
 
-1. ATAK-CIV SDK 5.6 is not in this tree, so there is no `com.atakmap` plugin class, plugin manifest, or APK.
+1. `atak-plugin/` is source only. A local 5.6.0.26 configuration failed before `compileSdk` was applied (`isDevKitEnabled()` was missing). That setup is now in the Gradle file and has not been recompiled here. No APK exists.
 2. Official MeshCore commit `81dbae5` will not transmit a 167-byte MCTAK fragment (`ERR_CODE_ILLEGAL_ARG` above 165). Markers and oversize chat stay in memory. No versioned smaller fragment was added.
 3. The GATT client compiles against Android SDK 35 and has not been run on BLE, LoRa, or ATAK. Tests use an in-process frame exchanger.
 4. Sequence numbers live in memory only. A process restart re-seeds; receivers resync after three rejected PLIs, which is the recovery the spec describes, not a disk store.
 5. Optional ENC and the full transfer timer state machine (20 s rounds, R4, implosion jitter) are not wired. The size math and the decoder are.
+6. The pane can send all-chat or a named room through the core. That is not ATAK's own GeoChat box. Copying native GeoChat is an experimental checkbox, default off, because the only documented observe hook is `CommsLogger` and its javadoc says non-metrics use is not recommended. `PreSendProcessor` is not used. A contact UID is not treated as a private LoRa destination.

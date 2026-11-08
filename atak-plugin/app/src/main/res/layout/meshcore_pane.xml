@@ -28,4 +28,33 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="@string/disconnect" />
+
+    <EditText
+        android:id="@+id/meshcore_room"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="@string/room_hint"
+        android:inputType="text"
+        android:maxLength="32" />
+
+    <EditText
+        android:id="@+id/meshcore_out_text"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="@string/chat_hint"
+        android:inputType="textCapSentences|textMultiLine"
+        android:maxLength="200" />
+
+    <Button
+        android:id="@+id/meshcore_send"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/send_chat" />
+
+    <CheckBox
+        android:id="@+id/meshcore_watch"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:checked="false"
+        android:text="@string/watch_geochat" />
 </LinearLayout>

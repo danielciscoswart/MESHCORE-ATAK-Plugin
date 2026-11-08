@@ -47,6 +47,22 @@ Published plugin `SyracuseUniversity/PET` `lingualinkledger` (its README says AT
 6. `targetSdk` 36 matches the local template. The published meshcore-TAK 5.6 build uses `targetSdkVersion 34`.
 7. Java source/target 1.8 is what the local template compiles. This tree's plugin sources were written to that level. `./scripts/test.sh` still runs on JDK 21.
 
-## Not used, because the signature was not read
+## 5.6.0.26 javadoc, read on the parent box
 
-`CommsMapComponent.registerPreSendProcessor`, `CommsLogger.logSend`, `DropDownMapComponent`, `AbstractPluginLifecycle`, and any 4.x lifecycle that meshcore-TAK's own anatomy note describes as the old template. Outbound CoT from ATAK is not hooked. The pane can send an opt-in self beacon. Chat the operator types into ATAK's own GeoChat box is not yet copied onto the radio.
+Source of these lines: API Documentation 5.6.0 inside that SDK, `VERSION.txt` `47de477`. HTML only. No decompile. Not re-read in this environment.
+
+| Fact | Decision |
+| --- | --- |
+| `CommsLogger.logSend(CotEvent, String)`, `logSend(CotEvent, String[])`, `logReceive(CotEvent, String, String)`, `dispose()` | Experimental checkbox, default off. Callback only queues a short GeoChat XML copy. It does not edit the event or send on that thread. |
+| `CommsMapComponent.getInstance()`, `registerCommsLogger`, `unregisterCommsLogger` | Used only while that checkbox is on. |
+| Javadoc: the logger slows the system and any use beyond metrics or debugging is not recommended | The checkbox text says experimental and untested. It is not the supported chat path. |
+| `PreSendProcessor.processCotEvent(CotEvent, String[])`, no unregister, do not send from inside it, single plugin | Not called. |
+| `ChatMessageListener.chatMessageReceived` is incoming only | Not used for outbound. |
+| Destination on the hooks is an address or contact UIDs, not a room-versus-direct field | A UID is not treated as a private LoRa send. The pane sends all-chat, or a named room, on the selected private MeshCore channel. |
+
+Still not confirmed by that javadoc, so the next compile or a device test has to answer them:
+
+1. Does `CotEvent.getType()` still return the CoT type string, and does `CotEvent.toString()` still return the XML?
+2. Does `logSend` run on the comms thread, and does a short queue handoff keep that callback from blocking the send?
+3. Does `logSend` actually fire for GeoChat typed into ATAK?
+4. Can `CommsMapComponent.getInstance()` be null during `onStart`?
