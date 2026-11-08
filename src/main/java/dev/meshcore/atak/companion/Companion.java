@@ -25,6 +25,11 @@ public final class Companion {
     public static final int PACKET_DEVICE_INFO = 0x0D;
     public static final int PACKET_CHANNEL_INFO = 0x12;
     public static final int PACKET_CHANNEL_DATA = 0x1B;
+    /** Native companion text replies. Not MCTAK, and not turned into GeoChat here. */
+    public static final int PACKET_CONTACT_MSG = 0x07;
+    public static final int PACKET_CHANNEL_MSG = 0x08;
+    public static final int PACKET_CONTACT_MSG_V3 = 0x10;
+    public static final int PACKET_CHANNEL_MSG_V3 = 0x11;
     public static final int PACKET_MESSAGES_WAITING = 0x83;
 
     /** Firmware PUBLIC_GROUP_PSK, base64 "izOH6cXN6mrJ5e26oRXNcg==". Well-known, not a private key. */
@@ -58,9 +63,14 @@ public final class Companion {
         return new byte[] {(byte) CMD_DEVICE_QUERY, 0x03};
     }
 
+    public static boolean isNativeText(int packetType) {
+        return packetType == PACKET_CONTACT_MSG || packetType == PACKET_CHANNEL_MSG
+                || packetType == PACKET_CONTACT_MSG_V3 || packetType == PACKET_CHANNEL_MSG_V3;
+    }
+
     public static byte[] sendChannelData(int channel, byte[] datagram) {
-        if (datagram.length > 167) {
-            throw new IllegalArgumentException("datagram above companion frame check");
+        if (datagram.length > dev.meshcore.atak.mctak.Mctak.RADIO_MAX_PAYLOAD) {
+            throw new IllegalArgumentException("datagram above MeshCore group payload limit");
         }
         byte[] frame = new byte[3 + 2 + datagram.length];
         frame[0] = CMD_SEND_CHANNEL_DATA;
@@ -187,25 +197,29 @@ public final class Companion {
         public final String fingerprint;
         public final boolean publicChannel;
         public final boolean hashtag;
+        public final boolean zeroKey;
         public final boolean empty;
 
-        ChannelView(int index, String name, String fingerprint, boolean publicChannel, boolean hashtag, boolean empty) {
+        ChannelView(int index, String name, String fingerprint, boolean publicChannel, boolean hashtag,
+                    boolean zeroKey, boolean empty) {
             this.index = index;
             this.name = name;
             this.fingerprint = fingerprint;
             this.publicChannel = publicChannel;
             this.hashtag = hashtag;
+            this.zeroKey = zeroKey;
             this.empty = empty;
         }
 
         public boolean unsafeForTeamTraffic() {
-            return publicChannel || hashtag || empty;
+            return publicChannel || hashtag || zeroKey || empty;
         }
 
         @Override
         public String toString() {
             return "channel " + index + " name=" + name + " fp=" + fingerprint
-                    + (publicChannel ? " public" : "") + (hashtag ? " hashtag" : "");
+                    + (publicChannel ? " public" : "") + (hashtag ? " hashtag" : "")
+                    + (zeroKey ? " zero-key" : "");
         }
     }
 
@@ -224,11 +238,41 @@ public final class Companion {
             }
         }
         boolean wellKnown = Bytes.constantTimeEquals(secret, PUBLIC_CHANNEL_SECRET);
+        boolean derivedHashtag = derivedHashtagKey(name, secret);
         String fingerprint = fingerprint(secret);
         Arrays.fill(secret, (byte) 0);
         boolean namedPublic = "Public".equals(name);
         return new ChannelView(index, name, fingerprint, wellKnown || namedPublic,
-                name.startsWith("#"), name.isEmpty() && allZero);
+                name.startsWith("#") || derivedHashtag, allZero, name.isEmpty() && allZero);
+    }
+
+    /**
+     * Official companion doc: a hashtag key is the first 16 bytes of SHA-256 of the
+     * name, including the leading '#'. A slot whose secret matches that derivation
+     * is public even when the stored name omitted the '#'.
+     */
+    private static boolean derivedHashtagKey(String name, byte[] secret) {
+        if (name == null || name.isEmpty()) {
+            return false;
+        }
+        if (matchesSha256Prefix(secret, "#" + name)) {
+            return true;
+        }
+        return name.startsWith("#") && matchesSha256Prefix(secret, name);
+    }
+
+    private static boolean matchesSha256Prefix(byte[] secret, String text) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            byte[] prefix = Arrays.copyOf(digest, 16);
+            boolean same = Bytes.constantTimeEquals(secret, prefix);
+            Arrays.fill(digest, (byte) 0);
+            Arrays.fill(prefix, (byte) 0);
+            return same;
+        } catch (Exception ex) {
+            return false;
+        }
     }
 
     public static byte[] channelInfo(int index, String name, byte[] secret16) {

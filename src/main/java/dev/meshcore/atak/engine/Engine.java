@@ -79,6 +79,7 @@ public final class Engine {
     private String callsign = "LEARNER";
     private boolean readReceipts;
     private int seq;
+    private String transportStatus;
     private long lastBeaconMs = Long.MIN_VALUE / 4;
     private long pliIntervalMs = 300_000L;
     private int reconnects;
@@ -238,7 +239,7 @@ public final class Engine {
         if (view.unsafeForTeamTraffic()) {
             counters.inc("public_channel_refused");
             log.add("refused_unsafe_channel index=" + index);
-            return new Send("REFUSED_PUBLIC", "public, hashtag, and empty channels are not used");
+            return new Send("REFUSED_PUBLIC", "public, hashtag, zero-key, and empty channels are not used");
         }
         selected = index;
         log.add("selected_channel " + index);
@@ -324,6 +325,28 @@ public final class Engine {
 
     public boolean hasSelectedChannel() {
         return selected != null;
+    }
+
+    /** Last issued MCTAK sequence, including zero before any send. */
+    public int lastIssuedSequence() {
+        return seq & 0xFFFF;
+    }
+
+    /**
+     * Continue after a previous process. {@code lastIssued} is the last sequence
+     * that process handed out, not a public key or a channel secret. One integer.
+     */
+    public void resumeAfter(int lastIssued) {
+        this.seq = lastIssued & 0xFFFF;
+    }
+
+    /** Radio or unsupported-traffic status for the pane. Not a delivery receipt. */
+    public void noteTransportStatus(String status) {
+        this.transportStatus = status;
+    }
+
+    public String transportStatus() {
+        return transportStatus;
     }
 
     public Companion.ChannelView channel(int index) {

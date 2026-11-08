@@ -68,7 +68,12 @@ public final class MeshCoreAtakPlugin implements IPlugin {
                 host.engine().beacon(now);
             }
             drainWatchedChat(now);
+            String transport = host.engine().transportStatus();
+            if (transport != null) {
+                lastChatStatus = transport;
+            }
             List<String> events = host.pump(now, now / 1000L);
+            storeSequence();
             for (int i = 0; i < events.size(); i++) {
                 AtakCotBridge.publish(events.get(i));
             }
@@ -80,6 +85,7 @@ public final class MeshCoreAtakPlugin implements IPlugin {
     public MeshCoreAtakPlugin(IServiceController serviceController) {
         host.onCreate();
         radio = new MeshcoreGattLink(host.session());
+        restoreSequence();
         PluginContextProvider contexts = serviceController.getService(PluginContextProvider.class);
         pluginContext = contexts == null ? null : contexts.getPluginContext();
         uiService = serviceController.getService(IHostUIService.class);
@@ -119,6 +125,7 @@ public final class MeshCoreAtakPlugin implements IPlugin {
         running = false;
         handler.removeCallbacks(tick);
         setWatchGeoChat(false);
+        storeSequence();
         radio.stop();
         host.onStop();
         if (uiService != null) {
@@ -206,6 +213,56 @@ public final class MeshCoreAtakPlugin implements IPlugin {
                 + "\nInbound traffic is unverified. Fragments over 165 bytes are not sent."
                 + "\nA contact UID is not a private radio destination."
                 + "\n" + radio.block());
+    }
+
+    private void restoreSequence() {
+        if (pluginContext == null) {
+            return;
+        }
+        java.io.File file = new java.io.File(pluginContext.getFilesDir(), "mctak-seq.txt");
+        if (!file.isFile()) {
+            return;
+        }
+        java.io.BufferedReader reader = null;
+        try {
+            reader = new java.io.BufferedReader(new java.io.FileReader(file));
+            String line = reader.readLine();
+            if (line != null && line.trim().length() > 0) {
+                host.engine().resumeAfter(Integer.parseInt(line.trim()));
+            }
+        } catch (Exception ex) {
+            host.engine().counters().inc("sequence_restore_failed");
+        } finally {
+            if (reader != null) {
+                try {
+                    reader.close();
+                } catch (java.io.IOException ignored) {
+                    host.engine().counters().inc("sequence_restore_failed");
+                }
+            }
+        }
+    }
+
+    private void storeSequence() {
+        if (pluginContext == null) {
+            return;
+        }
+        java.io.File file = new java.io.File(pluginContext.getFilesDir(), "mctak-seq.txt");
+        java.io.FileWriter writer = null;
+        try {
+            writer = new java.io.FileWriter(file, false);
+            writer.write(Integer.toString(host.engine().lastIssuedSequence()));
+        } catch (Exception ex) {
+            host.engine().counters().inc("sequence_store_failed");
+        } finally {
+            if (writer != null) {
+                try {
+                    writer.close();
+                } catch (java.io.IOException ignored) {
+                    host.engine().counters().inc("sequence_store_failed");
+                }
+            }
+        }
     }
 
     private void sendPaneChat(String room, String text) {

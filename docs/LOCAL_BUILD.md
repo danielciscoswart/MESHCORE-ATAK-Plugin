@@ -38,13 +38,14 @@ Do not copy those into this tree.
    - `takdev.plugin` — `atak-gradle-takdev.jar` inside that directory
 5. Leave `takrepo.url` unset. Do not put a username or password in `local.properties`.
 6. Point `takDebugKeyFile` at a debug keystore that stays on this machine. Do not use a path inside the git tree, and do not commit the SDK's bundled `android_keystore`. Retail TAK Product Center signing is a separate decision and is not configured here.
-7. From `atak-plugin`, with Gradle 8.14.3 on `PATH`:
+7. From `atak-plugin`, with Gradle 8.14.3 and JDK 17:
 
 ```sh
-gradle assembleCivDebug
+gradle --no-daemon :app:assembleRelease
+../scripts/check-unsigned-release.sh app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
-There is no Gradle wrapper jar in this tree, so the SDK is not pulled in by a wrapper download from tak.gov. `assembleCivDebug` is the variant name used by takdev. If the local plugin uses a different variant name, use the one the template prints.
+There is no `civ` flavor. The variants are `debug` and `release`. Do not run `:app:assembleDebug` for this package: a debug assemble can be signed with the automatic debug key. Do not set `takDebugKeyFile`. Release has no `signingConfig`. `takdevLint` requires `minifyEnabled true`; do not turn it off and do not skip the lint task. The SDK keep file stays on the SDK machine and is applied by takdev's `preReleaseBuild` step.
 
 `atak-plugin/app/build.gradle` defines `isDevKitEnabled()` before `atak-takdev-plugin` is applied. It returns false unless `takrepo.url` is set, and `takrepoUser` / `takrepoPassword` default to empty strings. Do not set `takrepo.url`. The local `takdev.plugin` jar stays on the classpath from `atak-plugin/build.gradle`. A configuration run of commit `90503e6` failed with `Could not find method isDevKitEnabled()` and then reported a missing `compileSdk` because the `android` block never finished. This change has not been compiled against the SDK in this environment.
 

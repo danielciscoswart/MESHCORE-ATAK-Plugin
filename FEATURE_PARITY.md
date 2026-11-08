@@ -74,7 +74,7 @@ No row is field-verified. "Tests" means `./scripts/test.sh` only.
 
 ## Release blockers that are still true
 
-1. `atak-plugin/` is source only. A local 5.6.0.26 configuration failed before `compileSdk` was applied (`isDevKitEnabled()` was missing). That setup is now in the Gradle file and has not been recompiled here. No APK exists.
+1. Debug javac of `b4d9f5e` succeeded against the local 5.6.0.26 SDK. `assembleRelease` of that commit failed `takdevLint` because minification was off. Release minification is now on and has not been assembled. No APK and no signature exist.
 2. Official MeshCore commit `81dbae5` will not transmit a 167-byte MCTAK fragment (`ERR_CODE_ILLEGAL_ARG` above 165). Markers and oversize chat stay in memory. No versioned smaller fragment was added.
 3. The GATT client compiles against Android SDK 35 and has not been run on BLE, LoRa, or ATAK. Tests use an in-process frame exchanger.
 4. Sequence numbers live in memory only. A process restart re-seeds; receivers resync after three rejected PLIs, which is the recovery the spec describes, not a disk store.

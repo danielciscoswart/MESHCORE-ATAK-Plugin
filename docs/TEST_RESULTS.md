@@ -65,4 +65,8 @@ Exit code: 0
 
 The `official meshcore limits` and companion-session groups now also check the ESP32 notification arithmetic (a 165-byte datagram is a 170-byte send and a 174-byte notify), a truncated 173-byte notify is dropped, the offline-queue threshold of 16, and that a device-info PIN is zeroed. Those checks are inside the same 13 passing groups. They do not execute BLE or the ATAK SDK.
 
-Not run: `atak-plugin/` against ATAK-CIV 5.6.0.26, instrumented Android tests, ATAK load, BLE bonding, or LoRa. No phone and no radio. Positions in tests are fixed fixtures.
+## Current default run
+
+After the channel-privacy, sequence, and send-status checks, `./scripts/test.sh` with both optional variables unset prints `PASSED 14 FAILED 0 SKIPPED 2`. The new group is `channel privacy sequence and honest send status`. The two skips are still not passes.
+
+`:app:compileDebugJavaWithJavac` of commit `b4d9f5e` succeeded on the parent machine. See `docs/BUILD_PROVENANCE.md`. That compile is not an APK, not a plugin load, and not a retail signature. `:app:assembleRelease` of that commit failed `takdevLint` before R8. Release minification is now enabled and has not been assembled here.

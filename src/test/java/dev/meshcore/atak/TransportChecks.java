@@ -28,8 +28,15 @@ final class TransportChecks {
         check(!Mctak.radioWillAccept(167));
         check(Mctak.radioWillAccept(165));
 
-        byte[] tooBig = Companion.sendChannelData(1, new byte[167]);
+        byte[] tooBig = floodFrame(167);
         eq("illegal_arg", RadioLimits.decision(tooBig, 512));
+        boolean refused = false;
+        try {
+            Companion.sendChannelData(1, new byte[167]);
+        } catch (IllegalArgumentException ex) {
+            refused = true;
+        }
+        check(refused);
         byte[] exact = Companion.sendChannelData(1, new byte[165]);
         eq("ok", RadioLimits.decision(exact, 512));
         eq("mtu", RadioLimits.decision(exact, 23));
@@ -51,7 +58,7 @@ final class TransportChecks {
 
         eq("BLOCKED_RADIO_LIMIT", engine.sendChat(Mctak.SCOPE_ALL, 0, "", "x".repeat(200), 2_000L).status);
         eq("NOT_TRANSMITTED", engine.sendMarker(null, 2_000L).status);
-        byte[] over = Companion.sendChannelData(1, new byte[167]);
+        byte[] over = floodFrame(167);
         eq("illegal_arg", RadioLimits.decision(over, RadioLimits.MIN_MTU_FOR_MAX_FRAME));
 
         eq(173, RadioLimits.ESP32_ATT_PAYLOAD);
@@ -267,6 +274,71 @@ final class TransportChecks {
         Mctak.Header header = new Mctak.Header(0, false, Mctak.KIND_PLI, sender, seq);
         Mctak.Pli pli = new Mctak.Pli(1_800_000_000L, 515074000, -1278000, 1036, 45, 3, 85, 0x90);
         return Mctak.frame(header, pli.body());
+    }
+
+    static void allegations() {
+        Engine engine = new Engine();
+        engine.onLinkUp(1_000L);
+        byte[] key = new byte[32];
+        Bytes.putRaw4(key, 0, 0x11111111);
+        engine.receiveFrame(Companion.selfInfo(key, 910_525, 62_500, 8, 5, "node"), 1_000L);
+        byte[] derived = sha256Prefix("#test");
+        eq("9cd8fcf22a47333b591d96a2b848b73f", Bytes.hex(derived));
+        engine.receiveFrame(Companion.channelInfo(3, "test", derived), 1_000L);
+        eq("REFUSED_PUBLIC", engine.selectChannel(3).status);
+        engine.receiveFrame(Companion.channelInfo(4, "named", new byte[16]), 1_000L);
+        eq("REFUSED_PUBLIC", engine.selectChannel(4).status);
+        byte[] random = new byte[16];
+        Arrays.fill(random, (byte) 0x5A);
+        engine.receiveFrame(Companion.channelInfo(5, "test", random), 1_000L);
+        eq("OK", engine.selectChannel(5).status);
+        for (String line : engine.log()) {
+            check(!line.contains("9cd8fcf22a47333b591d96a2b848b73f"));
+            check(!line.contains("00000000000000000000000000000000"));
+        }
+
+        engine.resumeAfter(40);
+        eq(40, engine.lastIssuedSequence());
+        eq("QUEUED", engine.joinSelected(2_000L).status);
+        byte[] ident = engine.drainTx(2_000L).get(0);
+        int seq = (ident[5 + 8] & 0xFF) | ((ident[5 + 9] & 0xFF) << 8);
+        eq(41, seq);
+
+        RadioSession session = new RadioSession(engine);
+        long now = 8_000L;
+        session.onConnected(now);
+        session.onMtu(512, now);
+        session.onNotifications(true);
+        session.tick(now);
+        byte[] app = session.pollWrite();
+        check(app != null);
+        session.onNotification(new byte[] {Companion.PACKET_CHANNEL_MSG, 0x00}, now + 10);
+        check(engine.counters().get("native_text_unsupported") >= 1);
+        eq("NATIVE_TEXT_UNSUPPORTED", engine.transportStatus());
+        eq(0L, engine.counters().get("receipt_delivered_queued"));
+        session.onNotification(new byte[] {Companion.PACKET_ERROR, RadioLimits.ERR_ILLEGAL_ARG}, now + 90);
+        eq("RADIO_ERROR_6", engine.transportStatus());
+        eq(0L, engine.counters().get("receipt_delivered_queued"));
+    }
+
+    private static byte[] floodFrame(int payloadLen) {
+        byte[] frame = new byte[5 + payloadLen];
+        frame[0] = (byte) Companion.CMD_SEND_CHANNEL_DATA;
+        frame[1] = 1;
+        frame[2] = (byte) 0xFF;
+        frame[3] = (byte) 0xFF;
+        frame[4] = (byte) 0xFF;
+        return frame;
+    }
+
+    private static byte[] sha256Prefix(String text) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return Arrays.copyOf(digest, 16);
+        } catch (Exception ex) {
+            throw new AssertionError(ex);
+        }
     }
 
     private static byte[] secret() {

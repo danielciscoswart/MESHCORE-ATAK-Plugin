@@ -38,6 +38,7 @@ public final class AllTests {
         test("two simulated radios", AllTests::radios);
         test("PLI resync and self echo", AllTests::pliResync);
         test("official meshcore limits", TransportChecks::limits);
+        test("channel privacy sequence and honest send status", TransportChecks::allegations);
         test("companion session loss duplicate bounds reconnect", TransportChecks::session);
         test("plugin lifecycle contacts chat markers", PluginChecks::lifecycle);
         test("optional mctak fixtures", AllTests::fixtures);

@@ -151,6 +151,10 @@ public final class RadioSession {
         }
         if (inflight != null && matches(inflight[0] & 0xFF, type)) {
             byte[] cmd = inflight;
+            if ((cmd[0] & 0xFF) == Companion.CMD_SYNC_NEXT && Companion.isNativeText(type)) {
+                engine.counters().inc("native_text_unsupported");
+                engine.noteTransportStatus("NATIVE_TEXT_UNSUPPORTED");
+            }
             inflight = null;
             tableFullRetries = 0;
             noteSuccess(cmd, frame);
@@ -164,6 +168,9 @@ public final class RadioSession {
             engine.counters().inc("radio_error");
             note("error " + code);
             int cmdByte = cmd[0] & 0xFF;
+            if (code != RadioLimits.ERR_TABLE_FULL) {
+                engine.noteTransportStatus("RADIO_ERROR_" + code);
+            }
             if (cmdByte == Companion.CMD_SEND_CHANNEL_DATA && code == RadioLimits.ERR_TABLE_FULL
                     && tableFullRetries < 1) {
                 retryHold = cmd;
@@ -172,6 +179,9 @@ public final class RadioSession {
                 return;
             }
             tableFullRetries = 0;
+            if (cmdByte == Companion.CMD_SEND_CHANNEL_DATA && code == RadioLimits.ERR_TABLE_FULL) {
+                engine.noteTransportStatus("RADIO_ERROR_" + code);
+            }
             if (cmdByte == Companion.CMD_GET_CHANNEL) {
                 advanceChannel();
             } else if (cmdByte == Companion.CMD_APP_START || cmdByte == Companion.CMD_DEVICE_QUERY) {
@@ -179,6 +189,10 @@ public final class RadioSession {
             }
             engine.receiveFrame(frame, nowMs);
             return;
+        }
+        if (Companion.isNativeText(type)) {
+            engine.counters().inc("native_text_unsupported");
+            engine.noteTransportStatus("NATIVE_TEXT_UNSUPPORTED");
         }
         engine.counters().inc("unexpected_response");
         engine.receiveFrame(frame, nowMs);
@@ -195,6 +209,9 @@ public final class RadioSession {
                 engine.counters().inc("command_timeout");
                 note("timeout " + (lost[0] & 0xFF));
                 int cmd = lost[0] & 0xFF;
+                if (cmd == Companion.CMD_SEND_CHANNEL_DATA) {
+                    engine.noteTransportStatus("SEND_TIMEOUT");
+                }
                 if (cmd == Companion.CMD_APP_START || cmd == Companion.CMD_DEVICE_QUERY
                         || cmd == Companion.CMD_GET_CHANNEL) {
                     retryHandshake(lost);
