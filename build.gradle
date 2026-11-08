@@ -1,6 +1,11 @@
 // Local SDK mode uses takdev.plugin from local.properties.
 // Pipeline mode uses -Ptakrepo.url and -Ptakrepo.user. This file does not
 // contain a repository password or a default tak.gov login.
+//
+// ATAK_VERSION is a project extra property, not a buildscript classpath
+// property. atak-gradle-takdev reads it from :app while that plugin is applied.
+
+ext.ATAK_VERSION = '5.6.0'
 
 buildscript {
     def readLocal = { String key ->

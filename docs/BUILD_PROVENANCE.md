@@ -22,6 +22,10 @@ Parent machine, SDK kept local. `VERSION.txt` in that SDK tree: `ATAK CIV SDK 47
 
 Same machine and SDK. `:app:compileDebugJavaWithJavac` exited 0 again. JDK tests were 14 passed and 2 optional skips. `:app:assembleRelease` exited 1 at `:app:takdevLint` before R8 and before any APK existed. The message was `android.bundle.storeArchive.enable is enabled. Please set storeArchive to false for proper release signing.` No keystore was opened and nothing was signed. The wording mentions signing; the failed check is the archive flag, not a missing key. This repository still does not declare a signingConfig.
 
+## Civ release of commit `e3a3ece`
+
+The submission zip was 165953 bytes, SHA-256 `665e9fa9c3ecc43a0ba84f7b0bd1cbda99b2b998a9146bc32ce1bbce55c10d3c`. `./gradlew --no-daemon assembleCivRelease` with JDK 17 and the three local paths exited 1 while applying `atak-takdev-plugin`: `Could not get unknown property 'ATAK_VERSION' for project ':app'`. The missing `compileSdk` line is from that aborted evaluation. No APK was produced. The working `856a81d` root file set `ext.ATAK_VERSION = '5.6.0'` before its buildscript block. The move to the repository root did not keep that project property, and the plugin reads it on `:app`.
+
 ## Source after `856a81d`
 
 Commits after `856a81d` change the checker and then the Gradle layout. They have not been assembled. The 32003-byte APK remains the only measured package, and it is the no-flavor `assembleRelease` output. It is not `assembleCivRelease`.

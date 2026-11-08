@@ -10,6 +10,9 @@ mkdir -p "$DEST"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
+REVISION="$(git -C "$ROOT" rev-parse HEAD)"
+SUBJECT="$(git -C "$ROOT" log -1 --format=%s)"
+
 copy_tree() {
   local name="$1"
   mkdir -p "$STAGE/$name"
@@ -28,6 +31,12 @@ copy_tree() {
     -cf - . | tar -C "$STAGE/$name" -xf -
   find "$STAGE/$name" -type f -name '*.jar' ! -name 'gradle-wrapper.jar' -delete
   find "$STAGE/$name" -type d -empty -delete
+  # Commit id of the tree that was packed. The zip hash is not written here.
+  cat >"$STAGE/$name/SOURCE_REVISION.txt" <<EOF
+git-commit: ${REVISION}
+subject: ${SUBJECT}
+note: This file records the git revision. The archive hash is outside the zip so it does not change this file.
+EOF
 }
 
 verify_tree() {
@@ -48,6 +57,10 @@ verify_tree() {
   test -f "$root/android/ble/src/dev/meshcore/atak/ble/MeshcoreGattLink.java"
   grep -q "productFlavors" "$root/app/build.gradle"
   grep -q "civ {" "$root/app/build.gradle"
+  grep -q "ext.ATAK_VERSION = '5.6.0'" "$root/app/build.gradle"
+  grep -q "ext.ATAK_VERSION = '5.6.0'" "$root/build.gradle"
+  test -f "$root/SOURCE_REVISION.txt"
+  grep -q "^git-commit: ${REVISION}$" "$root/SOURCE_REVISION.txt"
   if grep -R -n "task assembleCivRelease" "$root/app/build.gradle" "$root/build.gradle"; then
     echo "refusing a dummy assembleCivRelease task" >&2
     exit 1
@@ -82,6 +95,8 @@ write_zip() {
     echo "archive exceeds 25MB" >&2
     exit 1
   fi
+  sha256sum "$out" | tee "$out.sha256"
+  unzip -p "$out" "$name/SOURCE_REVISION.txt"
 }
 
 copy_tree meshcore-atak-source
