@@ -1,0 +1,22 @@
+# Copy to atak-plugin/local.properties on the machine that holds the SDK.
+# Never commit local.properties. Never put tak.gov credentials in this file.
+#
+# sdk.dir is the public Android SDK (compileSdk 36), not the ATAK SDK.
+sdk.dir=/absolute/path/to/android-sdk
+#
+# sdkPath is the unzipped ATAK-CIV SDK directory whose filename is 5.6.0.26.
+# It must contain main.jar. This repository does not contain that SDK.
+sdkPath=/absolute/path/to/ATAK-CIV-5.6.0.26-SDK
+#
+# takdev.plugin is the takdev jar inside that same SDK directory.
+takdev.plugin=/absolute/path/to/ATAK-CIV-5.6.0.26-SDK/atak-gradle-takdev.jar
+#
+# Debug signing stays on this machine. Do not copy the SDK's bundled
+# android_keystore into git, and do not point a public build at it.
+# takDebugKeyFile=/absolute/path/to/your-debug.keystore
+# takDebugKeyFilePassword=
+# takDebugKeyAlias=
+# takDebugKeyPassword=
+#
+# Leave takrepo.url unset. Setting it makes takdev use the credentialed
+# TAK maven repository. This project does not call that repository.

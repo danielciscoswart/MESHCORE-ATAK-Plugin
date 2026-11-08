@@ -53,6 +53,19 @@ final class TransportChecks {
         eq("NOT_TRANSMITTED", engine.sendMarker(null, 2_000L).status);
         byte[] over = Companion.sendChannelData(1, new byte[167]);
         eq("illegal_arg", RadioLimits.decision(over, RadioLimits.MIN_MTU_FOR_MAX_FRAME));
+
+        eq(173, RadioLimits.ESP32_ATT_PAYLOAD);
+        eq(164, RadioLimits.ESP32_NOTIFY_DATAGRAM_FIT);
+        byte[] send165 = Companion.sendChannelData(1, new byte[165]);
+        eq(170, send165.length);
+        check(send165.length <= RadioLimits.ESP32_ATT_PAYLOAD);
+        byte[] inbound = Companion.channelDataRecv(4, 1, 0, Mctak.DATA_TYPE_DEV, new byte[165]);
+        eq(174, inbound.length);
+        check(Mctak.parse(java.util.Arrays.copyOfRange(inbound, 9, inbound.length)) != null);
+        byte[] truncated = java.util.Arrays.copyOf(inbound, RadioLimits.ESP32_ATT_PAYLOAD);
+        check(Companion.parseChannelData(truncated) == null);
+        check(!RadioLimits.backlogMayHaveOverflowed(15));
+        check(RadioLimits.backlogMayHaveOverflowed(16));
     }
 
     static void session() {
@@ -206,6 +219,10 @@ final class TransportChecks {
         device[3] = 4;
         Bytes.putU32le(device, 4, 0x13572468L);
         link.onNotification(device, now + 100);
+        eq(0, device[4] & 0xFF);
+        eq(0, device[5] & 0xFF);
+        eq(0, device[6] & 0xFF);
+        eq(0, device[7] & 0xFF);
         for (int i = 0; i < 4; i++) {
             link.tick(now + 200L + i * 100L);
             byte[] get = link.pollWrite();

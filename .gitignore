@@ -5,3 +5,8 @@ agent-tools/
 local.properties
 *.apk
 *.keystore
+android_keystore
+sdk/
+sdk-*/
+atak-plugin/.gradle/
+atak-plugin/app/build/

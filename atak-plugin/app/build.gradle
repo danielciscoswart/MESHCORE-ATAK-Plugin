@@ -1,0 +1,80 @@
+// Compiles only where the ATAK-CIV SDK is already installed.
+// main.jar and atak-gradle-takdev.jar are read from sdkPath / takdev.plugin.
+// They are not downloaded and are not committed.
+
+def prop = { String name ->
+    if (project.hasProperty(name) && project.property(name) != null) {
+        return project.property(name).toString()
+    }
+    def file = rootProject.file('local.properties')
+    if (!file.isFile()) {
+        return null
+    }
+    def properties = new Properties()
+    def reader = file.newReader('UTF-8')
+    try {
+        properties.load(reader)
+    } finally {
+        reader.close()
+    }
+    return properties.getProperty(name)
+}
+
+def sdkPath = prop('sdkPath')
+if (sdkPath == null) {
+    throw new GradleException('Set sdkPath in atak-plugin/local.properties. See local.properties.example. Do not commit the SDK or a keystore.')
+}
+def mainJar = new File(sdkPath, 'main.jar')
+if (!mainJar.isFile()) {
+    throw new GradleException('ATAK SDK main.jar not found at ' + mainJar + '. The 5.6.0.26 SDK stays on the machine that downloaded it.')
+}
+
+apply plugin: 'com.android.application'
+apply plugin: 'atak-takdev-plugin'
+
+android {
+    namespace 'dev.meshcore.atak.plugin'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'dev.meshcore.atak.plugin'
+        // Parent reading of the 5.6.0.26 build guide: minSdk 21, target 36.
+        // A published third-party 5.6 build uses targetSdk 34. If the local
+        // template rejects 36, change this one number to the template value.
+        minSdkVersion 21
+        targetSdkVersion 36
+        versionCode 1
+        versionName '0.2-source'
+        manifestPlaceholders = [atakApiVersion: 'com.atakmap.app@5.6.0.CIV']
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles 'proguard-rules.pro'
+        }
+    }
+
+    sourceSets {
+        main {
+            java {
+                srcDir 'src/main/java'
+                srcDir '../../src/main/java'
+                srcDir '../../android/ble/src'
+            }
+        }
+    }
+
+    lint {
+        abortOnError false
+    }
+}
+
+dependencies {
+    compileOnly files(mainJar)
+}

@@ -28,6 +28,21 @@ public final class RadioLimits {
 
     public static final int ATT_OVERHEAD = 3;
     /**
+     * ESP32 companion calls {@code BLEDevice::setMTU(MAX_FRAME_SIZE)} and then
+     * notifies the whole frame. It does not apply the RP2040 drop. If the
+     * negotiated ATT MTU stays 176, the notification payload is 173 bytes.
+     * A channel-data host frame is 9 bytes plus the datagram, so a 165-byte
+     * datagram is 174 bytes and does not fit that payload. A flood send of the
+     * same datagram is 5 + 165 = 170 and does fit. Truncation was not observed
+     * on a radio. This is not a new datagram size.
+     */
+    public static final int ESP32_LOCAL_MTU = MAX_FRAME_SIZE;
+    public static final int ESP32_ATT_PAYLOAD = ESP32_LOCAL_MTU - ATT_OVERHEAD;
+    public static final int CHANNEL_DATA_HEADER = 9;
+    public static final int ESP32_NOTIFY_DATAGRAM_FIT = ESP32_ATT_PAYLOAD - CHANNEL_DATA_HEADER;
+    /** Default {@code OFFLINE_QUEUE_SIZE} in companion {@code MyMesh.h}. Builds may override it. */
+    public static final int DEFAULT_OFFLINE_QUEUE = 16;
+    /**
      * RP2040 companion drops a notify when {@code frame + 3 > mtu} and comments
      * that the client must negotiate {@code MTU >= MAX_FRAME_SIZE + 3}
      * ({@code src/helpers/rp2040/SerialBLEInterface.cpp} lines 122–125).
@@ -86,5 +101,10 @@ public final class RadioLimits {
             return -1;
         }
         return frame.length - 5;
+    }
+
+    /** True when one offline-queue drain returned at least the default capacity. */
+    public static boolean backlogMayHaveOverflowed(int framesFromOneDrain) {
+        return framesFromOneDrain >= DEFAULT_OFFLINE_QUEUE;
     }
 }

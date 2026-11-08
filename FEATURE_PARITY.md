@@ -61,7 +61,7 @@ No row is field-verified. "Tests" means `./scripts/test.sh` only.
 | App-layer AES-GCM | Optional PSK | ENC bit with no key is dropped and counted. PBKDF2 and GCM are not implemented | partial | `malformed` |
 | Channel key as authentication | Meshtastic channel PSK is also not a signature | Documented non-goal. CoT carries `__meshcore unverified="true"` | implemented as a warning, not a defense | `pliBytes`, `radios` |
 | iPhone / iTAK | Separate Meshtastic apps | No | not-supported | — |
-| ATAK plugin UI, tool menu, preferences screen | Yes | `PluginHost` has create/start/stop/destroy plus contact, chat, and marker lists. No view, no `com.atakmap` type, not loaded into ATAK | partial, unverified in ATAK | `plugin lifecycle contacts chat markers` |
+| ATAK plugin UI, tool menu, preferences screen | Yes | `atak-plugin/` has manifest discovery, `IPlugin` lifecycle, a pane, and internal CoT publish. Not compiled against the 5.6.0.26 SDK and not loaded into ATAK. `PluginHost` remains the tested in-memory model | partial, source only, unverified in ATAK | `plugin lifecycle contacts chat markers`; SDK compile not run |
 | Retail or debug APK | Published releases | Not built | not-supported in this tree | — |
 
 ## Deliberate non-goals

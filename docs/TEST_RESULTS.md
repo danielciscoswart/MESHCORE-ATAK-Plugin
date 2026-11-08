@@ -63,4 +63,6 @@ Exit code: 0
 
 `./scripts/compile-ble.sh` equivalent, using Android SDK platform 35 `android.jar` from `platform-35_r02.zip` (sha256 `0988cacad01b38a18a47bac14a0695f246bc76c1b06c0eeb8eb0dc825ab0c8e0`). `javac --release 21` produced `dev.meshcore.atak.ble.MeshcoreGattLink` class files. That is not an APK, not dex, and not an ATAK plugin. The ATAK SDK was not on the compile classpath.
 
-Not run: instrumented Android tests, ATAK load, BLE bonding, or LoRa. No phone and no radio. Positions in tests are fixed fixtures.
+The `official meshcore limits` and companion-session groups now also check the ESP32 notification arithmetic (a 165-byte datagram is a 170-byte send and a 174-byte notify), a truncated 173-byte notify is dropped, the offline-queue threshold of 16, and that a device-info PIN is zeroed. Those checks are inside the same 13 passing groups. They do not execute BLE or the ATAK SDK.
+
+Not run: `atak-plugin/` against ATAK-CIV 5.6.0.26, instrumented Android tests, ATAK load, BLE bonding, or LoRa. No phone and no radio. Positions in tests are fixed fixtures.

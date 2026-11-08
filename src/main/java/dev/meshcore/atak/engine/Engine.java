@@ -113,7 +113,7 @@ public final class Engine {
     }
 
     public void setCallsign(String callsign) {
-        this.callsign = callsign == null || callsign.isBlank() ? "LEARNER" : callsign.trim();
+        this.callsign = callsign == null || callsign.trim().isEmpty() ? "LEARNER" : callsign.trim();
     }
 
     public void setTeamRole(int team, int role) {

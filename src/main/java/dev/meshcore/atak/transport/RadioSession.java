@@ -6,6 +6,7 @@ import dev.meshcore.atak.engine.Engine;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
 
@@ -56,7 +57,7 @@ public final class RadioSession {
     }
 
     public synchronized List<String> trace() {
-        return List.copyOf(trace);
+        return Collections.unmodifiableList(new ArrayList<String>(trace));
     }
 
     public synchronized boolean connected() {
@@ -135,6 +136,9 @@ public final class RadioSession {
             return;
         }
         int type = frame[0] & 0xFF;
+        if (type == Companion.PACKET_DEVICE_INFO) {
+            frame = wipePin(frame);
+        }
         if (type >= 0x80) {
             if (type == Companion.PACKET_MESSAGES_WAITING) {
                 if (syncWanted) {
@@ -356,6 +360,23 @@ public final class RadioSession {
             return response < 0x80;
         }
         return false;
+    }
+
+    /** Device-info bytes 4–7 are the BLE PIN. They are not retained. */
+    static byte[] wipePin(byte[] frame) {
+        if (frame.length < 8) {
+            return frame;
+        }
+        byte[] copy = Arrays.copyOf(frame, frame.length);
+        copy[4] = 0;
+        copy[5] = 0;
+        copy[6] = 0;
+        copy[7] = 0;
+        frame[4] = 0;
+        frame[5] = 0;
+        frame[6] = 0;
+        frame[7] = 0;
+        return copy;
     }
 
     private void note(String line) {

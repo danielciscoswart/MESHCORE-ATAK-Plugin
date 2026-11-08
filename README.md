@@ -4,7 +4,7 @@ Civilian off-grid learning software that maps MeshCore companion-radio traffic t
 
 Official companion and radio behavior is taken from [meshcore-dev/MeshCore](https://github.com/meshcore-dev/MeshCore) commit `81dbae592ffad40b4212bc0b37e82b38da08f4bc`. The gridbasedotnet plugin is an interoperability reference, not the firmware authority. This repository does not modify that upstream.
 
-This tree is **not** an installable ATAK plugin and it has **not** been fielded on a radio or a phone. No APK is produced. The Android BLE client compiles against the public Android SDK only. The ATAK-CIV SDK was not available here.
+This tree is **not** an installable ATAK plugin and it has **not** been fielded on a radio or a phone. No APK is produced here. `atak-plugin/` is source for a later compile on a machine that already has the ATAK-CIV 5.6.0.26 SDK. That SDK is not in this repository. See `docs/LOCAL_BUILD.md` and `docs/DESIGN_REVIEW.md`.
 
 ## What you can run here
 

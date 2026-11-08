@@ -7,6 +7,7 @@ import dev.meshcore.atak.transport.RadioSession;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -122,15 +123,21 @@ public final class PluginHost {
         life = Life.DESTROYED;
     }
 
-    public void pump(long nowMs, long nowSeconds) {
+    /** CoT strings accepted on this tick. The caller may hand them to ATAK. */
+    public List<String> pump(long nowMs, long nowSeconds) {
+        List<String> published = new ArrayList<String>();
         if (life != Life.STARTED) {
-            return;
+            return published;
         }
         session.tick(nowMs);
         for (Engine.Inbound inbound : engine.drainInbound()) {
+            if (inbound.cot != null) {
+                published.add(inbound.cot);
+            }
             ingest(inbound.cot, nowSeconds);
         }
         refreshStale(nowSeconds);
+        return published;
     }
 
     /**
@@ -164,15 +171,15 @@ public final class PluginHost {
     }
 
     public List<Contact> contacts() {
-        return List.copyOf(contacts.values());
+        return Collections.unmodifiableList(new ArrayList<Contact>(contacts.values()));
     }
 
     public List<ChatLine> chats() {
-        return List.copyOf(chats);
+        return Collections.unmodifiableList(new ArrayList<ChatLine>(chats));
     }
 
     public List<Marker> markers() {
-        return List.copyOf(markers);
+        return Collections.unmodifiableList(new ArrayList<Marker>(markers));
     }
 
     public Contact contact(String uid) {
