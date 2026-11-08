@@ -67,10 +67,25 @@ android {
     buildTypes {
         release {
             // takdevLint rejects a release with obfuscation disabled.
-            // No signingConfig: assembleRelease writes app-release-unsigned.apk.
+            // No signingConfig is declared. A keystore is not read or created.
             minifyEnabled true
             shrinkResources false
             proguardFiles 'proguard-rules.pro'
+        }
+    }
+
+    // Same flag as gradle.properties. The lint message names this property.
+    bundle {
+        storeArchive {
+            enable = false
+        }
+    }
+
+    // takdev 3.x also checks legacy JNI packaging. This project has no .so
+    // files; the flag does not add native code or an NDK build.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
 

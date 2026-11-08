@@ -18,6 +18,10 @@ Parent machine, SDK kept local. `VERSION.txt` in that SDK tree: `ATAK CIV SDK 47
 
 `:app:assembleRelease` reached `preReleaseBuild` (`augment the proguard file with the atak core rules`) and failed at `:app:takdevLint` with `Obfuscation disabled. Please set minifyEnabled to true.` Release had `minifyEnabled false`. No APK was produced. No keystore was opened. Debug assemble was not run, because a debug package can be signed with the automatic debug key.
 
+## Release package of commit `8b92d89`
+
+Same machine and SDK. `:app:compileDebugJavaWithJavac` exited 0 again. JDK tests were 14 passed and 2 optional skips. `:app:assembleRelease` exited 1 at `:app:takdevLint` before R8 and before any APK existed. The message was `android.bundle.storeArchive.enable is enabled. Please set storeArchive to false for proper release signing.` No keystore was opened and nothing was signed. The wording mentions signing; the failed check is the archive flag, not a missing key. This repository still does not declare a signingConfig.
+
 ## What the next local command is
 
 From `atak-plugin`, JDK 17, Gradle 8.14.3, same three local paths, `takrepo.url` unset, no keystore properties:
@@ -27,4 +31,4 @@ gradle --no-daemon :app:assembleRelease
 ./scripts/check-unsigned-release.sh app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
-Release now sets `minifyEnabled true` and does not set `signingConfig`. The expected output name is `app-release-unsigned.apk`. `scripts/check-unsigned-release.sh` checks that the archive has no signature block and that the dex and manifest still contain `dev.meshcore.atak.host.MeshCoreAtakPlugin` and `dev.meshcore.atak.plugin`. takdev still applies its own core keep rules from the local SDK during `preReleaseBuild`. `proguard-release-keep.txt` is not copied into this repository. `shrinkResources` stays false so the pane layout is not stripped before a device test. R8 code shrinking and obfuscation are on. Do not disable `takdevLint`.
+Release sets `minifyEnabled true`, `android.bundle.storeArchive.enable=false`, and legacy JNI packaging. It still does not set `signingConfig`. No unsigned APK has been produced. After a successful assemble, the expected file name is `app-release-unsigned.apk`. From the repository root, `scripts/check-unsigned-release.sh` checks that an archive has no signature block and that the dex and manifest still contain `dev.meshcore.atak.host.MeshCoreAtakPlugin` and `dev.meshcore.atak.plugin`. takdev still applies its own core keep rules from the local SDK during `preReleaseBuild`. `proguard-release-keep.txt` is not copied into this repository. `shrinkResources` stays false. Do not disable `takdevLint`. If the next lint line requires a keystore, stop.
