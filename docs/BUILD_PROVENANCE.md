@@ -24,11 +24,13 @@ Same machine and SDK. `:app:compileDebugJavaWithJavac` exited 0 again. JDK tests
 
 ## What the next local command is
 
-From `atak-plugin`, JDK 17, Gradle 8.14.3, same three local paths, `takrepo.url` unset, no keystore properties:
+JDK 17, Gradle 8.14.3, same three local paths, `takrepo.url` unset, no keystore properties. Run Gradle inside `atak-plugin`, then the check from the repository root:
 
 ```sh
+cd atak-plugin
 gradle --no-daemon :app:assembleRelease
-./scripts/check-unsigned-release.sh app/build/outputs/apk/release/app-release-unsigned.apk
+cd ..
+./scripts/check-unsigned-release.sh atak-plugin/app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
 Release sets `minifyEnabled true`, `android.bundle.storeArchive.enable=false`, and legacy JNI packaging. It still does not set `signingConfig`. No unsigned APK has been produced. After a successful assemble, the expected file name is `app-release-unsigned.apk`. From the repository root, `scripts/check-unsigned-release.sh` checks that an archive has no signature block and that the dex and manifest still contain `dev.meshcore.atak.host.MeshCoreAtakPlugin` and `dev.meshcore.atak.plugin`. takdev still applies its own core keep rules from the local SDK during `preReleaseBuild`. `proguard-release-keep.txt` is not copied into this repository. `shrinkResources` stays false. Do not disable `takdevLint`. If the next lint line requires a keystore, stop.

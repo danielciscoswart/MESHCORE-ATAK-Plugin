@@ -42,7 +42,8 @@ Do not copy those into this tree.
 
 ```sh
 gradle --no-daemon :app:assembleRelease
-../scripts/check-unsigned-release.sh app/build/outputs/apk/release/app-release-unsigned.apk
+cd ..
+./scripts/check-unsigned-release.sh atak-plugin/app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
 There is no `civ` flavor. The variants are `debug` and `release`. Do not run `:app:assembleDebug` for this package: a debug assemble can be signed with the automatic debug key. Do not set `takDebugKeyFile`. Release has no `signingConfig`. `takdevLint` requires `minifyEnabled true` and `android.bundle.storeArchive.enable=false`. Both are set. JNI packaging uses the legacy extractor because that is another takdev 3.x check; this project has no native libraries. Do not skip `takdevLint`. The SDK keep file stays on the SDK machine and is applied by takdev's `preReleaseBuild` step. Commit `8b92d89` compiled in debug and failed release at the archive flag. No unsigned APK has been produced.
