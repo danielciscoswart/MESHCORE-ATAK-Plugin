@@ -33,4 +33,26 @@ cd ..
 ./scripts/check-unsigned-release.sh atak-plugin/app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
-Release sets `minifyEnabled true`, `android.bundle.storeArchive.enable=false`, and legacy JNI packaging. It still does not set `signingConfig`. No unsigned APK has been produced. After a successful assemble, the expected file name is `app-release-unsigned.apk`. From the repository root, `scripts/check-unsigned-release.sh` checks that an archive has no signature block and that the dex and manifest still contain `dev.meshcore.atak.host.MeshCoreAtakPlugin` and `dev.meshcore.atak.plugin`. takdev still applies its own core keep rules from the local SDK during `preReleaseBuild`. `proguard-release-keep.txt` is not copied into this repository. `shrinkResources` stays false. Do not disable `takdevLint`. If the next lint line requires a keystore, stop.
+Release sets `minifyEnabled true`, `android.bundle.storeArchive.enable=false`, and legacy JNI packaging. It does not set `signingConfig`. takdev still applies its own core keep rules from the local SDK during `preReleaseBuild`. `proguard-release-keep.txt` is not copied into this repository. `shrinkResources` stays false. Do not disable `takdevLint`. If a later lint line requires a keystore, stop.
+
+## Unsigned release of commit `856a81d`
+
+Same local SDK and tools. `:app:compileDebugJavaWithJavac` exited 0. `:app:assembleRelease` exited 0 with R8 enabled and no `signingConfig`. JDK tests were 14 passed and 2 optional skips.
+
+Measured artifact, not stored in git:
+
+| Field | Value |
+| --- | --- |
+| File | `app-release-unsigned.apk` |
+| Size | 32003 bytes |
+| SHA-256 | `3f0a968225f6c4723eb2632ee60f93d291b29dab8bc190f8b511dab6d3cb1cdc` |
+| `aapt2 dump badging` package | `dev.meshcore.atak.plugin` |
+| versionCode / versionName | 1 / `0.2-source` |
+| minSdk / targetSdk / compileSdk | 21 / 36 / 36 |
+| `plugin-api` | `com.atakmap.app@5.6.0.CIV` |
+| `assets/plugin.xml` impl | `dev.meshcore.atak.host.MeshCoreAtakPlugin` |
+| R8 | that class name is still in the dex |
+
+`apksigner verify` rejected it with `Missing META-INF/MANIFEST.MF`. That is the unsigned result. No signature block was present. No key was used. It was not installed. A debug signature is not a retail ATAK load. The development-core mapping warning still means this is not a Product Center build.
+
+`scripts/check-unsigned-release.sh` on that APK exited 1 with `manifest package string dev.meshcore.atak.plugin not found`. It grepped the compiled binary manifest as text. `aapt2` already showed the package. The script now requires `aapt2 dump badging` and `aapt2 dump xmltree`, and exits 1 when `aapt2` is missing. `scripts/test-check-unsigned.sh` rejects a wrong package, a signature block, a missing dex name, a wrong `plugin.xml`, and a missing `aapt2`. Those fixtures are not the measured APK. The Java sources that produce the payload were not changed for this verifier fix.

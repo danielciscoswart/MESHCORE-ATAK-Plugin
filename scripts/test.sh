@@ -10,3 +10,4 @@ mkdir -p "$OUT"
 find "$ROOT/src/main/java" "$ROOT/src/test/java" -name '*.java' | sort > "$ROOT/build/sources.txt"
 javac --release 21 -encoding UTF-8 -d "$OUT" @"$ROOT/build/sources.txt"
 java -cp "$OUT" dev.meshcore.atak.TestMain
+"$ROOT/scripts/test-check-unsigned.sh"
