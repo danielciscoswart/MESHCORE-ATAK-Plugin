@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MeshCore ATAK</string>
+    <string name="app_desc">MeshCore companion bridge. Not field verified. Position is opt-in. Inbound markers are unverified.</string>
+    <string name="status_idle">Radio idle. Connect does not send position.</string>
+    <string name="connect">Connect radio</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="opt_in">Send my position</string>
+    <string name="opt_out">Stop sending position</string>
+    <string name="room_hint">Room name. Empty sends all-chat on the selected private channel.</string>
+    <string name="chat_hint">MeshCore chat text. This does not use ATAK GeoChat.</string>
+    <string name="send_chat">Send MeshCore chat</string>
+    <string name="watch_geochat">Experimental: also copy ATAK GeoChat. Default off. Untested. Not a private radio path.</string>
+</resources>

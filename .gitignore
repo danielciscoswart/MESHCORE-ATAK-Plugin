@@ -1,0 +1,12 @@
+build/
+agent-tools/
+*.class
+.gradle/
+local.properties
+*.apk
+*.keystore
+android_keystore
+sdk/
+sdk-*/
+.gradle/
+app/build/

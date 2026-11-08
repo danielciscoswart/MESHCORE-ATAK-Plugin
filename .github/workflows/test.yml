@@ -1,0 +1,27 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  java:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Core, session, and plugin-host tests
+        run: |
+          mkdir -p build
+          ./scripts/test.sh | tee build/test-out.txt
+      - name: Optional checks are not counted as passes
+        run: |
+          grep -q "SKIPPED 2" build/test-out.txt
+          grep -q "skipped optional mctak fixtures" build/test-out.txt
+          grep -q "skipped optional official meshcore tree" build/test-out.txt
+          ! grep -q "ok optional" build/test-out.txt
+      - name: Compile the BLE client against the public Android SDK
+        run: ./scripts/compile-ble.sh

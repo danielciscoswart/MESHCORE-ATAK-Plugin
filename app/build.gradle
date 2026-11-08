@@ -1,0 +1,113 @@
+// Local mode compiles against sdkPath/main.jar.
+// Pipeline mode (takrepo.url set) lets atak-gradle-takdev resolve ATAK.
+// Neither mode declares a signingConfig.
+
+def prop = { String name ->
+    if (project.hasProperty(name) && project.property(name) != null) {
+        return project.property(name).toString()
+    }
+    def file = rootProject.file('local.properties')
+    if (!file.isFile()) {
+        return null
+    }
+    def properties = new Properties()
+    def reader = file.newReader('UTF-8')
+    try {
+        properties.load(reader)
+    } finally {
+        reader.close()
+    }
+    return properties.getProperty(name)
+}
+
+def takrepoUrlValue = prop('takrepo.url')
+def mavenMode = takrepoUrlValue != null && takrepoUrlValue.trim().length() > 0
+def sdkPath = prop('sdkPath')
+def mainJar = sdkPath == null ? null : new File(sdkPath, 'main.jar')
+if (!mavenMode) {
+    if (sdkPath == null || mainJar == null || !mainJar.isFile()) {
+        throw new GradleException('Local mode needs sdkPath/main.jar. Do not commit the SDK. Pipeline mode sets takrepo.url instead.')
+    }
+}
+
+ext.isDevKitEnabled = { ->
+    return mavenMode
+}
+ext.takrepoUrl = mavenMode ? takrepoUrlValue : 'http://127.0.0.1/'
+ext.takrepoUser = prop('takrepo.user') != null ? prop('takrepo.user') : ''
+ext.takrepoPassword = prop('takrepo.password') != null ? prop('takrepo.password') : ''
+if (sdkPath != null) {
+    ext.sdkPath = sdkPath
+}
+// The plugin looks this up on :app. Root also sets it. The value is the
+// 5.6 API line, not the 5.6.0.26 archive name.
+ext.ATAK_VERSION = '5.6.0'
+
+apply plugin: 'com.android.application'
+apply plugin: 'atak-takdev-plugin'
+
+android {
+    namespace 'dev.meshcore.atak.plugin'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'dev.meshcore.atak.plugin'
+        minSdkVersion 21
+        targetSdkVersion 36
+        versionCode 1
+        versionName '0.2-source'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    flavorDimensions 'tak'
+    productFlavors {
+        civ {
+            dimension 'tak'
+            manifestPlaceholders = [atakApiVersion: 'com.atakmap.app@5.6.0.CIV']
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources false
+            proguardFiles 'proguard-rules.pro'
+        }
+    }
+
+    bundle {
+        storeArchive {
+            enable = false
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
+    sourceSets {
+        main {
+            java {
+                srcDir 'src/main/java'
+                srcDir '../src/main/java'
+                srcDir '../android/ble/src'
+            }
+        }
+    }
+
+    lint {
+        abortOnError false
+    }
+}
+
+if (!mavenMode) {
+    dependencies {
+        compileOnly files(mainJar)
+    }
+}
