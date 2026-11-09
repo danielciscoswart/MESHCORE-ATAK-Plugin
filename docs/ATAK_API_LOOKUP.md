@@ -31,7 +31,7 @@ Published plugin `SyracuseUniversity/PET` `lingualinkledger` (its README says AT
 | `PluginContextProvider.getPluginContext()` | same file |
 | `IHostUIService.addToolbarItem` / `removeToolbarItem` / `showPane(Pane, null)` | same file |
 | `ToolbarItem.Builder`, `ToolbarItemAdapter.onClick` | same file |
-| `MarshalManager.marshal(Drawable, Drawable.class, Bitmap.class)` | same file |
+| `MarshalManager.marshal(Drawable, Drawable.class, Bitmap.class)` | same file. This tree no longer does that. It decodes `R.drawable.ic_launcher` with `BitmapFactory` and marshals `android.graphics.Bitmap`. |
 | `PluginLayoutInflater.inflate(Context, int, ViewGroup)` | same file |
 | `PaneBuilder.setMetaValue` with `Pane.RELATIVE_LOCATION`, `Pane.Location.Default`, width and height ratios | same file |
 
@@ -66,3 +66,7 @@ Still not confirmed by that javadoc, so the next compile or a device test has to
 2. Does `logSend` run on the comms thread, and does a short queue handoff keep that callback from blocking the send?
 3. Does `logSend` actually fire for GeoChat typed into ATAK?
 4. Can `CommsMapComponent.getInstance()` be null during `onStart`?
+
+## Play Store 5.6.0.12
+
+No public changelog was found that lists plugin APIs added between Play Store ATAK-CIV 5.6.0.12 and the 5.6.0.26 SDK archive. The calls above are present in the 4.6.0.5 public source or in a published 5.4 plugin. `BitmapFactory.decodeResource` and `android.graphics.Bitmap.createBitmap` are platform APIs, not ATAK APIs. `Resources.getDrawable(int)` is no longer called. That does not prove a plugin built with the 5.6.0.26 SDK loads in 5.6.0.12. The published 5.5 sample still passes a PNG drawable through `MarshalManager`. This tree does not, because that conversion was given a vector drawable and is a candidate for the constructor throw. Whether `MarshalManager` accepts `android.graphics.Bitmap` was not in the javadoc notes above. A null result skips the toolbar item and does not leave the constructor.
