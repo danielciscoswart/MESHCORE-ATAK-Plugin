@@ -21,9 +21,11 @@ import dev.meshcore.atak.engine.Engine;
  * stops. A mode switch renames it.
  *
  * <p>v7.5: when a mode switch or a channel change replaces the room's uid, the old contact is not
- * deleted but kept as "(closed) ...", with the same uid and the same PluginConnector, until a link
- * loss, the plugin stopping, the same uid coming back, or {@link #MAX_CLOSED} newer ones pushing
- * it out. ATAK's chat window for the old uid stays
+ * deleted but kept as "(closed) ...", with the same uid and the same PluginConnector, until the
+ * same uid comes back or {@link #MAX_CLOSED} newer ones push it out. L1/K3: a link loss, the channel
+ * going away or the plugin stopping removes every closed contact at once ({@code reconcile(null)}
+ * and {@link #remove()}), so no stale "(closed)" entries are listed while disconnected; the Lost
+ * toast and the status line already say what happened. ATAK's chat window for the old uid stays
  * open (the 5.6.0.26 chat API has no public way to close it), and with the contact gone ATAK
  * accepted typed text ("Me:") and delivered it to nobody. With the closed contact in place the
  * typed text reaches {@link RoomSendReceiver}, the engine refuses it as an old room

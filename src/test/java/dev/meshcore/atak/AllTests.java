@@ -109,8 +109,14 @@ public final class AllTests {
         test("J2 slot is counted and explained without text", V74Checks::j2SlotIsCountedAndExplainedWithoutText);
         test("K1 drain reads every queued message after one tickle", V75Checks::drainReadsEveryQueuedMessageAfterOneTickle);
         test("K1 one message per tickle still works", V75Checks::drainOneMessagePerTickleStillWorks);
-        test("K1 drain at READY reads what queued while away", V75Checks::drainRunsAtReadyForMessagesQueuedBeforeTheLinkCameUp);
+        test("L1 drain is deferred at READY until a channel is chosen", V75Checks::drainDefersAtReadyUntilAChannelIsChosen);
+        test("L1 pushes before a channel is chosen start no drain", V75Checks::pushesBeforeAChannelIsChosenDoNotStartADrain);
+        test("L1 channel choice starts one drain, backlog in order once", V75Checks::channelChoiceStartsExactlyOneDrainThatDeliversTheBacklogInOrder);
+        test("L1 channel change mid-drain starts no second drain", V75Checks::channelChangeDuringADrainDoesNotStartASecondDrain);
+        test("L1 a reconnect forgets the deferral and asks again", V75Checks::deferredDrainSurvivesAReconnectOnlyAsANewRequest);
         test("K1 drain runs again after a reconnect", V75Checks::drainRunsAgainOnReconnect);
+        test("R1 a queued send goes out after 8 sync requests", V75Checks::aQueuedSendGoesOutAfterEightSyncRequestsDuringADrain);
+        test("R1 one send per 8 requests, none without a send", V75Checks::severalQueuedSendsGoOutOnePerEightRequestsAndNoneWithoutASend);
         test("K1 drain stops at the safety cap", V75Checks::drainStopsAtTheSafetyCap);
         test("K1 a tickle mid-drain is coalesced into one more pass", V75Checks::drainCoalescesATickleThatArrivesMidDrain);
         test("K1 drain ends on error or no answer and restarts", V75Checks::drainEndsOnErrorOrNoAnswerAndRestartsOnTheNextTickle);
@@ -120,6 +126,10 @@ public final class AllTests {
         test("K2 dedup window expires and memory is bounded", V75Checks::dedupWindowExpiresAndMemoryIsBounded);
         test("K2 recent native notes carry no text", V75Checks::recentNativeNotesShowTimestampAndRepeatButNeverText);
         test("K3 old window after a mode switch is refused with a toast", V75Checks::oldWindowAfterAModeSwitchIsRefusedWithAToast);
+        test("K3 link loss removes the room and every closed contact", V75Checks::linkLossRemovesTheRoomAndEveryClosedContact);
+        test("R2 a room message ATAK cannot show yet is retried in order", V75Checks::roomShowFailureKeepsTheMessagesAndRetriesInOrder);
+        test("R2 the retry buffer is bounded and cleared with the room", V75Checks::roomShowRetryIsBounded);
+        test("L1 a full backlog fits the engine and host buffers", V75Checks::aFullBacklogFitsTheEngineAndHostBuffers);
         test("K4 K5 dead hold gone, room needs the receiver only", V75Checks::deadHoldIsGoneAndTheRoomDoesNotNeedTheLogger);
         test("K6 a refused send is not remembered as sent", V75Checks::refusedSendIsNotRememberedAndARetryGoesThrough);
         test("K1 drain opcodes vs official firmware", V75Checks::drainOpcodesAreTheFirmwaresNumbers);

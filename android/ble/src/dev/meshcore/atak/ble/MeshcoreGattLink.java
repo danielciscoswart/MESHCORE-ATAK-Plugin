@@ -1447,11 +1447,15 @@ public final class MeshcoreGattLink {
         for (String line : recent) {
             sb.append("  ").append(line).append('\n');
         }
-        sb.append("drain: started=").append(engine.counters().get("drain_started"))
+        sb.append("drain: state=").append(session.drainState())
+                .append(" deferred=").append(engine.counters().get("drain_deferred"))
+                .append(" started=").append(engine.counters().get("drain_started"))
                 .append(" complete=").append(engine.counters().get("drain_complete"))
                 .append(" frames=").append(engine.counters().get("drain_frames"))
                 .append(" extra_pass=").append(engine.counters().get("drain_extra_pass"))
+                .append(" send_interleaved=").append(engine.counters().get("drain_send_interleaved"))
                 .append(" cap_hit=").append(engine.counters().get("drain_cap_hit"))
+                .append(" stopped_unexpected=").append(engine.counters().get("drain_stopped_unexpected"))
                 .append(" timeout=").append(engine.counters().get("drain_timeout"))
                 .append(" dup_dropped=").append(engine.counters().get("room_msg_dup_dropped")).append('\n');
         Engine.RadioStats stats = engine.radioStats();

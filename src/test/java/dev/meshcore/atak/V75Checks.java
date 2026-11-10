@@ -2,6 +2,7 @@ package dev.meshcore.atak;
 
 import dev.meshcore.atak.companion.Companion;
 import dev.meshcore.atak.engine.Engine;
+import dev.meshcore.atak.engine.RoomShowQueue;
 import dev.meshcore.atak.engine.SeenLru;
 import dev.meshcore.atak.engine.SendReasons;
 import dev.meshcore.atak.plugin.PluginHost;
@@ -27,6 +28,7 @@ final class V75Checks {
     private V75Checks() {}
 
     private static final byte[] SECRET = filled(0x5A);
+    private static dev.meshcore.atak.mctak.Counters mctakCounters;
 
     private static byte[] filled(int v) {
         byte[] b = new byte[16];
@@ -42,6 +44,7 @@ final class V75Checks {
         final List<Integer> ops = new ArrayList<>();
         long now = 10_000L;
         int syncSent;
+        int sendsWritten;
         int maxOutstanding;
         boolean endless;
         boolean answerSyncWithError;
@@ -105,6 +108,7 @@ final class V75Checks {
                 session.onNotification(idx == 0
                         ? Companion.channelInfo(0, "Public", Companion.PUBLIC_CHANNEL_SECRET)
                         : idx == 1 ? Companion.channelInfo(1, "field-a", SECRET)
+                        : idx == 2 ? Companion.channelInfo(2, "field-b", filled(0x6B))
                         : Companion.channelInfo(idx, "", new byte[16]), now);
             } else if (op == Companion.CMD_GET_STATS) {
                 session.onNotification(Companion.statsCore(3900, 1_000L, 0, 0), now);
@@ -123,6 +127,9 @@ final class V75Checks {
                 } else {
                     session.onNotification(queue.pollFirst(), now);
                 }
+            } else if (op == Companion.CMD_SEND_CHANNEL_DATA || op == Companion.CMD_SEND_CHANNEL_TXT) {
+                sendsWritten++;
+                session.onNotification(new byte[] {(byte) Companion.PACKET_OK}, now);
             } else {
                 throw new AssertionError("unexpected command " + op);
             }
@@ -143,13 +150,14 @@ final class V75Checks {
         return Companion.channelTextV3(0, 1, 2, 1_800_000_000L + n, text);
     }
 
-    /** A READY link with channel 1 chosen and nothing queued on the radio. */
+    /** A READY link with channel 1 chosen (the L1 drain, if any, has run) and nothing queued on the radio. */
     private static FakeRadio readyRadio() {
         FakeRadio radio = new FakeRadio();
         radio.connect();
         radio.pump();
         check(radio.session.ready());
         eq("OK", radio.engine.selectChannel(1).status);
+        radio.pump(); // L1: the drain deferred at READY starts now and finds an empty queue
         return radio;
     }
 
@@ -182,17 +190,20 @@ final class V75Checks {
 
     static void drainOneMessagePerTickleStillWorks() {
         FakeRadio radio = readyRadio();
+        long completeBefore = radio.engine.counters().get("drain_complete");
         for (int i = 1; i <= 3; i++) {
             radio.arrive(msg(i, "Ana: live " + i));
             radio.pump();
         }
         eq(3L, radio.engine.counters().get("native_slot_1"));
         eq(3, radio.engine.drainRoomMessages().size());
-        eq(3L, radio.engine.counters().get("drain_complete") - 1L); // one more at READY
+        eq(3L, radio.engine.counters().get("drain_complete") - completeBefore);
     }
 
-    static void drainRunsAtReadyForMessagesQueuedBeforeTheLinkCameUp() {
-        // The firmware tickles only while a host is connected, so these have no tickle at all.
+    static void drainDefersAtReadyUntilAChannelIsChosen() {
+        // L1 (a): messages queued on the radio before a channel is chosen are not read. Reading
+        // takes a message off the radio for good, and with no channel chosen it could only reach
+        // the pane (last 10), never the room.
         FakeRadio radio = new FakeRadio();
         for (int i = 1; i <= 4; i++) {
             radio.arriveQuietly(msg(i, "Ana: while away " + i));
@@ -200,17 +211,132 @@ final class V75Checks {
         radio.connect();
         radio.pump();
         check(radio.session.ready());
-        eq(0, radio.queue.size());
-        eq(4L, radio.engine.counters().get("drain_frames"));
-        eq(1L, radio.engine.counters().get("no_more_messages"));
-        // Order on the wire after READY: stats, then the drain.
-        int stats = radio.ops.indexOf(Companion.CMD_GET_STATS);
-        int firstSync = radio.ops.indexOf(Companion.CMD_SYNC_NEXT);
-        check(stats >= 0 && firstSync > stats);
-        // No channel was chosen yet, so nothing went to the room: unverified radio text never
-        // reaches ATAK without the user choosing a channel (E2).
+        eq(0, radio.count(Companion.CMD_SYNC_NEXT));
+        eq(4, radio.queue.size());
+        eq(0L, radio.engine.counters().get("native_text_rx"));
+        eq(0L, radio.engine.counters().get("drain_started"));
+        eq(1L, radio.engine.counters().get("drain_deferred"));
+        eq("deferred", radio.session.drainState());
+        // Stats are still read at READY.
+        check(radio.ops.contains(Companion.CMD_GET_STATS));
+        // Waiting a long time changes nothing.
+        radio.now += 60_000L;
+        radio.pump();
+        eq(0, radio.count(Companion.CMD_SYNC_NEXT));
+        eq(4, radio.queue.size());
+    }
+
+    static void pushesBeforeAChannelIsChosenDoNotStartADrain() {
+        // L1 (b): during the handshake, at READY and after it, with no channel chosen.
+        FakeRadio radio = new FakeRadio();
+        radio.connect();
+        radio.arrive(msg(1, "Ana: during handshake"));
+        radio.pump();
+        check(radio.session.ready());
+        for (int i = 2; i <= 4; i++) {
+            radio.arrive(msg(i, "Ana: after ready " + i));
+            radio.pump();
+        }
+        eq(0, radio.count(Companion.CMD_SYNC_NEXT));
+        eq(4, radio.queue.size());
+        eq(0L, radio.engine.counters().get("drain_started"));
+        eq(0L, radio.engine.counters().get("sync_coalesced"));
+        // One drain_deferred per request: the handshake push, READY, and three pushes.
+        eq(5L, radio.engine.counters().get("drain_deferred"));
+        eq("deferred", radio.session.drainState());
         eq(0, radio.engine.drainRoomMessages().size());
-        eq(4L, radio.engine.counters().get("native_text_rx"));
+    }
+
+    static void channelChoiceStartsExactlyOneDrainThatDeliversTheBacklogInOrder() {
+        // L1 (c): 120 messages (more than the old host and engine caps) queued before the choice.
+        FakeRadio radio = new FakeRadio();
+        for (int i = 1; i <= 60; i++) {
+            radio.arriveQuietly(msg(i, String.format("Ana: m%03d", i)));
+        }
+        radio.connect();
+        radio.pump();
+        for (int i = 61; i <= 120; i++) {
+            radio.arrive(msg(i, String.format("Ana: m%03d", i)));
+            radio.pump();
+        }
+        eq(120, radio.queue.size());
+        eq(0, radio.count(Companion.CMD_SYNC_NEXT));
+        eq("OK", radio.engine.selectChannel(1).status);
+        radio.pump();
+        eq(0, radio.queue.size());
+        // One drain pass: 120 frames and the firmware's NO_MORE_MESSAGES.
+        eq(1L, radio.engine.counters().get("drain_started"));
+        eq(1L, radio.engine.counters().get("drain_deferred_started"));
+        eq(1L, radio.engine.counters().get("drain_complete"));
+        eq(120L, radio.engine.counters().get("drain_frames"));
+        eq(1L, radio.engine.counters().get("no_more_messages"));
+        eq(121, radio.count(Companion.CMD_SYNC_NEXT));
+        eq(0L, radio.engine.counters().get("drain_extra_pass"));
+        eq("idle", radio.session.drainState());
+        // All of it reached the room, oldest first, each once.
+        List<Engine.RoomMessage> room = radio.engine.drainRoomMessages();
+        eq(120, room.size());
+        for (int i = 0; i < 120; i++) {
+            check(room.get(i).text.endsWith(String.format("m%03d", i + 1)));
+        }
+        eq(0L, radio.engine.counters().get("room_inbox_overflow"));
+        eq(0L, radio.engine.counters().get("room_msg_dup_dropped"));
+        // And nothing starts a second drain by itself.
+        long sent = radio.count(Companion.CMD_SYNC_NEXT);
+        radio.pump();
+        eq(sent, (long) radio.count(Companion.CMD_SYNC_NEXT));
+        eq(1L, radio.engine.counters().get("drain_started"));
+    }
+
+    static void channelChangeDuringADrainDoesNotStartASecondDrain() {
+        // L1 (d): the user picks another channel while a drain is running.
+        FakeRadio radio = new FakeRadio();
+        for (int i = 1; i <= 30; i++) {
+            radio.arriveQuietly(msg(i, String.format("Ana: m%03d", i)));
+        }
+        radio.connect();
+        radio.pump();
+        eq("OK", radio.engine.selectChannel(1).status);
+        radio.beforeSyncReply = n -> {
+            if (n == 10) {
+                eq("OK", radio.engine.selectChannel(2).status);
+            }
+        };
+        radio.pump();
+        eq(0, radio.queue.size());
+        eq(1L, radio.engine.counters().get("drain_started"));
+        eq(1L, radio.engine.counters().get("drain_complete"));
+        eq(0L, radio.engine.counters().get("drain_extra_pass"));
+        eq(0L, radio.engine.counters().get("sync_coalesced"));
+        eq(31, radio.count(Companion.CMD_SYNC_NEXT));
+        check(radio.maxOutstanding <= 1);
+        eq("idle", radio.session.drainState());
+        // A deferred flag left over from before the choice cannot start another one either.
+        long sent = radio.count(Companion.CMD_SYNC_NEXT);
+        radio.pump();
+        eq(sent, (long) radio.count(Companion.CMD_SYNC_NEXT));
+    }
+
+    static void deferredDrainSurvivesAReconnectOnlyAsANewRequest() {
+        // The link drops while a drain is deferred: nothing carries over, and the next READY asks again.
+        FakeRadio radio = new FakeRadio();
+        radio.arriveQuietly(msg(1, "Ana: waiting"));
+        radio.connect();
+        radio.pump();
+        eq("deferred", radio.session.drainState());
+        radio.session.onDisconnected(radio.now);
+        eq("idle", radio.session.drainState());
+        radio.now += 40_000L;
+        radio.connect();
+        radio.pump();
+        eq("deferred", radio.session.drainState());
+        eq(0, radio.count(Companion.CMD_SYNC_NEXT));
+        eq(1, radio.queue.size());
+        // Choose the channel on the new link: the message is read, in the room.
+        eq("OK", radio.engine.selectChannel(1).status);
+        radio.pump();
+        eq(0, radio.queue.size());
+        eq(1, radio.engine.drainRoomMessages().size());
     }
 
     static void drainRunsAgainOnReconnect() {
@@ -221,9 +347,85 @@ final class V75Checks {
         radio.connect();
         radio.pump();
         check(radio.session.ready());
+        // L1: the new link has no channel chosen yet, so the message waits on the radio.
+        eq(1, radio.queue.size());
+        eq(0L, radio.engine.counters().get("drain_frames"));
+        eq("OK", radio.engine.selectChannel(1).status);
+        radio.pump();
         eq(0, radio.queue.size());
         eq(1L, radio.engine.counters().get("drain_frames"));
         eq(2L, radio.engine.counters().get("drain_started"));
+        eq(1, radio.engine.drainRoomMessages().size());
+    }
+
+    // ---- R1: a queued send gets a turn during a drain ---------------------------------------------
+
+    static void aQueuedSendGoesOutAfterEightSyncRequestsDuringADrain() {
+        FakeRadio radio = readyRadio();
+        for (int i = 1; i <= 40; i++) {
+            radio.queue.addLast(msg(i, String.format("Ana: m%03d", i)));
+        }
+        radio.session.onNotification(new byte[] {(byte) Companion.PACKET_MESSAGES_WAITING}, radio.now);
+        eq("QUEUED", radio.engine.sendFromRoom(radio.engine.roomSpec().uid, "id-r1", "on my way", radio.now).status);
+        int before = radio.ops.size();
+        long completeBefore = radio.engine.counters().get("drain_complete");
+        radio.pump();
+        eq(0, radio.queue.size());
+        eq(1, radio.sendsWritten);
+        List<Integer> ops = radio.ops.subList(before, radio.ops.size());
+        int sendAt = -1;
+        for (int i = 0; i < ops.size(); i++) {
+            if (ops.get(i) == Companion.CMD_SEND_CHANNEL_DATA || ops.get(i) == Companion.CMD_SEND_CHANNEL_TXT) {
+                sendAt = i;
+            }
+        }
+        // Exactly 8 sync requests first, then the send, then the drain carries on to the end (41 in all).
+        eq(8, sendAt);
+        for (int i = 0; i < sendAt; i++) {
+            eq((long) Companion.CMD_SYNC_NEXT, (long) ops.get(i));
+        }
+        eq(41L, ops.stream().filter(o -> o == Companion.CMD_SYNC_NEXT).count());
+        eq(1L, radio.engine.counters().get("drain_send_interleaved"));
+        eq(1L, radio.engine.counters().get("drain_complete") - completeBefore);
+        check(radio.maxOutstanding <= 1);
+        eq(40, radio.engine.drainRoomMessages().size());
+    }
+
+    static void severalQueuedSendsGoOutOnePerEightRequestsAndNoneWithoutASend() {
+        FakeRadio radio = readyRadio();
+        for (int i = 1; i <= 40; i++) {
+            radio.queue.addLast(msg(i, String.format("Ana: m%03d", i)));
+        }
+        radio.session.onNotification(new byte[] {(byte) Companion.PACKET_MESSAGES_WAITING}, radio.now);
+        for (int i = 0; i < 3; i++) {
+            eq("QUEUED", radio.engine.sendFromRoom(radio.engine.roomSpec().uid, "id-m" + i, "msg " + i,
+                    radio.now + i * 1000L).status);
+        }
+        int before = radio.ops.size();
+        radio.pump();
+        List<Integer> ops = radio.ops.subList(before, radio.ops.size());
+        List<Integer> sendPositions = new ArrayList<>();
+        int syncs = 0;
+        for (int i = 0; i < ops.size(); i++) {
+            if (ops.get(i) == Companion.CMD_SYNC_NEXT) {
+                syncs++;
+            } else {
+                sendPositions.add(syncs);
+            }
+        }
+        eq(3, radio.sendsWritten);
+        // Each send follows a multiple of 8 syncs, never two in a row between syncs.
+        eq(List.of(8, 16, 24), sendPositions);
+        // Without a queued send there is no interleave at all.
+        FakeRadio quiet = readyRadio();
+        for (int i = 1; i <= 30; i++) {
+            quiet.queue.addLast(msg(i, "Ana: q" + i));
+        }
+        quiet.session.onNotification(new byte[] {(byte) Companion.PACKET_MESSAGES_WAITING}, quiet.now);
+        quiet.pump();
+        eq(0L, quiet.engine.counters().get("drain_send_interleaved"));
+        eq(0, quiet.sendsWritten);
+        eq(0, quiet.queue.size());
     }
 
     static void drainStopsAtTheSafetyCap() {
@@ -501,6 +703,163 @@ final class V75Checks {
         // A null spec (link lost, channel unselected) removes them too.
         int reconcile = room.indexOf("boolean reconcile(Engine.RoomSpec spec)");
         check(room.indexOf("removeAllClosed();", reconcile) > reconcile && room.indexOf("removeAllClosed();", reconcile) < close);
+    }
+
+    static void linkLossRemovesTheRoomAndEveryClosedContact() {
+        // K3 (review): no stale "(closed)" contacts while disconnected. The host removes the room
+        // and the closed contacts whenever roomSpec() is null, and roomSpec() is null once the link
+        // is lost, because the channel choice goes with it.
+        PluginHost host = hostOnChannel1();
+        Engine engine = host.engine();
+        check(engine.roomSpec() != null);
+        engine.setPluginOnlyChat(false); // replaces the room: one "(closed)" contact on the phone
+        check(engine.roomSpec() != null);
+        engine.onLinkLost();
+        check(!engine.hasSelectedChannel());
+        check(engine.roomSpec() == null);
+        // A new session does not bring the room back until a channel is chosen again.
+        engine.onLinkUp(50_000L);
+        check(engine.roomSpec() == null);
+        String room = read("app/src/main/java/dev/meshcore/atak/host/AtakChatRoom.java");
+        int reconcile = room.indexOf("boolean reconcile(Engine.RoomSpec spec)");
+        int nullBranch = room.indexOf("if (spec == null) {", reconcile);
+        int nullEnd = room.indexOf("if (contact != null && !uid.equals(spec.uid))", nullBranch);
+        check(reconcile > 0 && nullBranch > reconcile && nullEnd > nullBranch);
+        String body = room.substring(nullBranch, nullEnd);
+        // With a room present: remove() clears the closed contacts. Without one: removeAllClosed().
+        check(body.contains("remove();") && body.contains("removeAllClosed();"));
+        int remove = room.indexOf("    void remove() {");
+        int removeEnd = room.indexOf("/** Open the room's conversation", remove);
+        check(room.substring(remove, removeEnd).contains("removeAllClosed();"));
+        // The tick passes a null spec whenever roomSpec() is null.
+        String plugin = read("app/src/main/java/dev/meshcore/atak/host/MeshCoreAtakPlugin.java");
+        int r = plugin.indexOf("private void reconcileRoom(long now)");
+        check(plugin.substring(r, r + 500).contains("engine.roomSpec() : null"));
+    }
+
+    // ---- R2: a room message the room cannot show yet is kept and retried -------------------------------
+
+    private static List<Engine.RoomMessage> roomMessages(int count, long receivedMs) {
+        PluginHost host = hostOnChannel1();
+        Engine engine = host.engine();
+        List<Engine.RoomMessage> out = new ArrayList<>();
+        for (int i = 1; i <= count; i++) {
+            engine.receiveFrame(Companion.channelTextV3(0, 1, 2, 1_800_000_000L + i, String.format("Ana: r%03d", i)),
+                    receivedMs);
+            if (i % 100 == 0) {
+                out.addAll(engine.drainRoomMessages());
+            }
+        }
+        out.addAll(engine.drainRoomMessages());
+        eq(count, out.size());
+        return out;
+    }
+
+    static void roomShowFailureKeepsTheMessagesAndRetriesInOrder() {
+        List<Engine.RoomMessage> msgs = roomMessages(3, 1_000L);
+        RoomShowQueue queue = new RoomShowQueue();
+        mctakCounters = new dev.meshcore.atak.mctak.Counters();
+        List<String> shown = new ArrayList<>();
+        boolean[] roomUp = {false};
+        RoomShowQueue.Shower shower = m -> {
+            if (!roomUp[0]) {
+                return false;
+            }
+            shown.add(m.text);
+            return true;
+        };
+        // The room is not up: nothing is shown, nothing is dropped, nothing is counted as failed.
+        queue.pump(msgs, 2_000L, shower, mctakCounters);
+        eq(3, queue.size());
+        eq(0, shown.size());
+        eq(1L, mctakCounters.get("room_msg_show_retry"));
+        eq(0L, mctakCounters.get("room_msg_show_failed"));
+        // Next tick, still down: only the first message is tried (order is kept), still held.
+        queue.pump(new ArrayList<Engine.RoomMessage>(), 3_000L, shower, mctakCounters);
+        eq(3, queue.size());
+        eq(2L, mctakCounters.get("room_msg_show_retry"));
+        // A fresh message while down goes to the back of the line.
+        queue.pump(roomMessages(1, 3_500L), 3_500L, shower, mctakCounters);
+        eq(4, queue.size());
+        // The room comes up: everything is shown, oldest first, exactly once.
+        roomUp[0] = true;
+        queue.pump(new ArrayList<Engine.RoomMessage>(), 4_000L, shower, mctakCounters);
+        eq(0, queue.size());
+        eq(4, shown.size());
+        check(shown.get(0).endsWith("r001") && shown.get(1).endsWith("r002") && shown.get(2).endsWith("r003")
+                && shown.get(3).endsWith("r001"));
+        eq(4L, mctakCounters.get("room_msg_shown"));
+        queue.pump(new ArrayList<Engine.RoomMessage>(), 5_000L, shower, mctakCounters);
+        eq(4, shown.size());
+        // A throwing room is the same as a refusing one.
+        RoomShowQueue throwing = new RoomShowQueue();
+        throwing.pump(roomMessages(1, 6_000L), 6_000L, m -> { throw new IllegalStateException("not ready"); },
+                mctakCounters);
+        eq(1, throwing.size());
+    }
+
+    static void roomShowRetryIsBounded() {
+        dev.meshcore.atak.mctak.Counters counters = new dev.meshcore.atak.mctak.Counters();
+        RoomShowQueue.Shower never = m -> false;
+        // Count bound: the oldest goes first and is counted.
+        RoomShowQueue queue = new RoomShowQueue();
+        queue.pump(roomMessages(RoomShowQueue.CAP + 5, 1_000L), 1_000L, never, counters);
+        eq(RoomShowQueue.CAP, queue.size());
+        eq(5L, counters.get("room_msg_retry_overflow"));
+        eq(5L, counters.get("room_msg_show_failed"));
+        // Age bound.
+        queue.pump(new ArrayList<Engine.RoomMessage>(), 1_000L + RoomShowQueue.MAX_AGE_MS + 1L, never, counters);
+        eq(0, queue.size());
+        eq((long) RoomShowQueue.CAP + 5L, counters.get("room_msg_show_failed"));
+        eq((long) RoomShowQueue.CAP, counters.get("room_msg_retry_expired"));
+        // Per-tick bound: a big backlog is shown over several ticks, in order, none lost.
+        RoomShowQueue big = new RoomShowQueue();
+        List<String> shown = new ArrayList<>();
+        RoomShowQueue.Shower ok = m -> shown.add(m.text);
+        List<Engine.RoomMessage> backlog = roomMessages(150, 2_000L);
+        big.pump(backlog, 2_000L, ok, counters);
+        eq(RoomShowQueue.PER_TICK, shown.size());
+        eq(150 - RoomShowQueue.PER_TICK, big.size());
+        big.pump(new ArrayList<Engine.RoomMessage>(), 3_000L, ok, counters);
+        big.pump(new ArrayList<Engine.RoomMessage>(), 4_000L, ok, counters);
+        big.pump(new ArrayList<Engine.RoomMessage>(), 5_000L, ok, counters);
+        eq(150, shown.size());
+        for (int i = 0; i < 150; i++) {
+            check(shown.get(i).endsWith(String.format("r%03d", i + 1)));
+        }
+        // clear(): the room went away, what waited is dropped and counted.
+        RoomShowQueue gone = new RoomShowQueue();
+        gone.pump(roomMessages(2, 6_000L), 6_000L, never, counters);
+        long failedBefore = counters.get("room_msg_show_failed");
+        gone.clear(counters);
+        eq(0, gone.size());
+        eq(2L, counters.get("room_msg_show_failed") - failedBefore);
+        eq(1L, counters.get("room_msg_retry_cleared"));
+        // The plugin shows through this queue, and clears it when the channel goes or changes.
+        String plugin = read("app/src/main/java/dev/meshcore/atak/host/MeshCoreAtakPlugin.java");
+        int a = plugin.indexOf("private void showRoomMessages(long now)");
+        String body = plugin.substring(a, plugin.indexOf("Messages typed into the room", a));
+        check(body.contains("roomShowQueue.pump(host.takeRoomMessages()"));
+        check(body.contains("roomShowQueue.clear(") && body.contains("!engine.hasSelectedChannel()"));
+        check(!body.contains("room_msg_show_failed"));
+    }
+
+    static void aFullBacklogFitsTheEngineAndHostBuffers() {
+        // L1 makes a whole offline queue arrive right after a channel is chosen.
+        check(Engine.ROOM_INBOX_CAP >= RadioLimits.SYNC_DRAIN_CAP);
+        check(RoomShowQueue.CAP >= RadioLimits.SYNC_DRAIN_CAP);
+        PluginHost host = hostOnChannel1();
+        Engine engine = host.engine();
+        for (int i = 1; i <= 250; i++) {
+            engine.receiveFrame(Companion.channelTextV3(0, 1, 2, 1_800_000_000L + i, String.format("Ana: b%03d", i)),
+                    2_000L + i);
+        }
+        host.pump(5_000L, 1_800_000_010L);
+        List<Engine.RoomMessage> taken = host.takeRoomMessages();
+        eq(250, taken.size());
+        check(taken.get(0).text.endsWith("b001") && taken.get(249).text.endsWith("b250"));
+        eq(0L, engine.counters().get("room_inbox_overflow"));
+        eq(0L, engine.counters().get("room_msg_host_overflow"));
     }
 
     // ---- item 4 and 5: dead hold gone; room offered on the send receiver alone ----------------------

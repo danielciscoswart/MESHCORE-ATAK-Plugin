@@ -109,6 +109,7 @@ final class TransportChecks {
 
         check(link.ready());
         eq("OK", live.selectChannel(1).status);
+        settleDeferredDrain(link, now + 900L);
         String pin = "13572468";
         for (String line : link.trace()) {
             check(!line.toLowerCase().contains(pin));
@@ -262,11 +263,18 @@ final class TransportChecks {
         byte[] stats = link.pollWrite();
         check(stats != null && (stats[0] & 0xFF) == Companion.CMD_GET_STATS);
         link.onNotification(Companion.statsCore(3900, 1_000L, 0, 0), now + 720L);
-        // v7.5: READY also starts one drain of the radio's offline queue; this radio has nothing.
-        link.tick(now + 800L);
-        byte[] drain = link.pollWrite();
-        check(drain != null && (drain[0] & 0xFF) == Companion.CMD_SYNC_NEXT);
-        link.onNotification(new byte[] {(byte) Companion.PACKET_NO_MORE_MESSAGES}, now + 820L);
+        // L1: READY alone sends no cmd 10 (no channel is chosen yet); see settleDeferredDrain.
+    }
+
+    /**
+     * L1: the drain deferred at READY starts on the first tick after a channel is chosen. Reads and
+     * answers that one cmd 10 (an empty queue) so a test can go on to its own commands.
+     */
+    static void settleDeferredDrain(RadioSession session, long now) {
+        session.tick(now);
+        byte[] cmd = session.pollWrite();
+        check(cmd != null && (cmd[0] & 0xFF) == Companion.CMD_SYNC_NEXT);
+        session.onNotification(new byte[] {(byte) Companion.PACKET_NO_MORE_MESSAGES}, now + 20L);
     }
 
     private static Engine ready(long now) {

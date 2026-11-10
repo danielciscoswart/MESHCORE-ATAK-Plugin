@@ -185,8 +185,11 @@ public final class Engine {
         }
     }
 
-    /** Room messages kept before the host takes them. */
-    public static final int ROOM_INBOX_CAP = 32;
+    /**
+     * Room messages kept before the host takes them. L1: a whole offline queue (up to 256, drain cap
+     * 300) can arrive right after a channel is chosen, so this must be above that.
+     */
+    public static final int ROOM_INBOX_CAP = 320;
     static final long ROOM_DEDUP_MS = 600_000L;
     static final long ROOM_SENT_FALLBACK_MS = 3_000L;
     /** v7.5: inbound native text seen again inside this window is a repeat. */

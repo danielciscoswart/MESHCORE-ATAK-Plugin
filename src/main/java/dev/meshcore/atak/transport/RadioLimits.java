@@ -51,6 +51,13 @@ public final class RadioLimits {
      * never says "no more messages" is cut off here and counted.
      */
     public static final int SYNC_DRAIN_CAP = 300;
+
+    /**
+     * R1: during a drain, one queued send goes out after every this many sync requests, so a typed
+     * message waits at most about 8 requests (about 0.6 s at the 60 ms write gap) instead of the
+     * whole backlog (about 25 s for a full 256-message queue).
+     */
+    public static final int SYNC_SEND_INTERLEAVE = 8;
     /**
      * RP2040 companion drops a notify when {@code frame + 3 > mtu} and comments
      * that the client must negotiate {@code MTU >= MAX_FRAME_SIZE + 3}

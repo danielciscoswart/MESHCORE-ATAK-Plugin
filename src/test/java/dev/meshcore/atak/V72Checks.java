@@ -299,7 +299,7 @@ final class V72Checks {
             } else if (op == Companion.CMD_GET_STATS) {
                 session.onNotification(Companion.statsCore(3900, 1_000L, 0, 0), now);
             } else if (op == Companion.CMD_SYNC_NEXT) {
-                // v7.5: the session drains the radio's queue once when it becomes READY.
+                // v7.5: a drain, once a channel is chosen (L1).
                 session.onNotification(new byte[] {(byte) Companion.PACKET_NO_MORE_MESSAGES}, now);
             } else {
                 throw new AssertionError("unexpected command " + op);
@@ -645,6 +645,8 @@ final class V72Checks {
             RadioSession session = new RadioSession(engine);
             long now = 10_000L + handshakeOnFakeClock(session, 10_000L);
             engine.selectChannel(1);
+            TransportChecks.settleDeferredDrain(session, now);
+            now += 100L;
             engine.setPluginOnlyChat(op == 62);
             if (op == 62) {
                 eq("QUEUED", engine.sendChat(Mctak.SCOPE_ALL, 0, "", "ping", now).status);
@@ -926,6 +928,7 @@ final class V72Checks {
         RadioSession session = new RadioSession(engine);
         long now = 10_000L + handshakeOnFakeClock(session, 10_000L);
         engine.selectChannel(1);
+        TransportChecks.settleDeferredDrain(session, now);
         engine.setPluginOnlyChat(op == 62);
         return session;
     }

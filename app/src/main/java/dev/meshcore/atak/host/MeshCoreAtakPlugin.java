@@ -30,6 +30,7 @@ import java.util.List;
 
 import dev.meshcore.atak.ble.MeshcoreGattLink;
 import dev.meshcore.atak.engine.Engine;
+import dev.meshcore.atak.engine.RoomShowQueue;
 import dev.meshcore.atak.engine.SendReasons;
 import dev.meshcore.atak.mctak.Mctak;
 import dev.meshcore.atak.plugin.KeyValueStore;
@@ -65,6 +66,8 @@ public final class MeshCoreAtakPlugin implements IPlugin {
     private MeshcoreGattLink radio;
     private MeshCoreRoomLogger roomLogger;
     private final AtakChatRoom room = new AtakChatRoom();
+    /** R2: radio messages the room could not show yet, retried every tick. */
+    private final RoomShowQueue roomShowQueue = new RoomShowQueue();
     private boolean roomLoggerRegistered;
     /** J1: receives the Intent ATAK sends to the room's PluginConnector when the user types. */
     private RoomSendReceiver roomSendReceiver;
@@ -1183,6 +1186,10 @@ public final class MeshCoreAtakPlugin implements IPlugin {
         }
         try {
             Engine.RoomSpec previous = roomSpecShown;
+            if (previous != null && spec != null && !previous.channelKey.equals(spec.channelKey)) {
+                // Another channel: messages still waiting belong to the old room.
+                roomShowQueue.clear(engine.counters());
+            }
             boolean changed = room.reconcile(spec);
             roomSpecShown = spec;
             if (changed && room.present()) {
@@ -1347,15 +1354,24 @@ public final class MeshCoreAtakPlugin implements IPlugin {
         if (host == null) {
             return;
         }
-        for (Engine.RoomMessage message : host.takeRoomMessages()) {
-            boolean shown = false;
-            try {
-                shown = room.show(message, now / 1000L);
-            } catch (Throwable t) {
-                Log.e(TAG, "room show failed: " + t.getClass().getName());
-            }
-            host.engine().counters().inc(shown ? "room_msg_shown" : "room_msg_show_failed");
+        Engine engine = host.engine();
+        if (!engine.hasSelectedChannel()) {
+            // The room is gone with the channel or the link: what is held belonged to it.
+            roomShowQueue.clear(engine.counters());
         }
+        final long nowSeconds = now / 1000L;
+        // R2: a message ATAK cannot show yet stays queued and is tried again next tick.
+        roomShowQueue.pump(host.takeRoomMessages(), now, new RoomShowQueue.Shower() {
+            @Override
+            public boolean show(Engine.RoomMessage message) {
+                try {
+                    return room.show(message, nowSeconds);
+                } catch (Throwable t) {
+                    Log.e(TAG, "room show failed: " + t.getClass().getName());
+                    return false;
+                }
+            }
+        }, engine.counters());
     }
 
     /**

@@ -46,6 +46,10 @@ public final class RadioSession {
     private boolean drainAgain;
     /** v7.5: cmd 10 frames issued in the current pass, for the safety cap. */
     private int drainSent;
+    /** L1: a drain was asked for while no channel was chosen; it starts once one is. */
+    private boolean drainDeferred;
+    /** R1: the sync count at which a queued send last got its turn, or -1. */
+    private int lastYieldAt = -1;
     private boolean mtuLatched;
     private boolean statsWanted;
     private long lastNotificationMs;
@@ -417,11 +421,31 @@ public final class RadioSession {
             statsWanted = false;
             return Companion.getStatsCore();
         }
+        if (drainDeferred && !drainActive && engine.hasSelectedChannel()) {
+            // L1: a channel is chosen now. Start exactly one drain for everything that was deferred.
+            engine.counters().inc("drain_deferred_started");
+            requestDrain();
+        }
         if (syncWanted) {
+            if (drainSent > 0 && drainSent % RadioLimits.SYNC_SEND_INTERLEAVE == 0 && drainSent != lastYieldAt) {
+                // R1: after every 8 sync requests one queued send goes first, so a typed message does
+                // not wait behind a whole backlog. syncWanted stays set: the next call asks again.
+                lastYieldAt = drainSent;
+                byte[] send = nextSendFrame(nowMs);
+                if (send != null) {
+                    engine.counters().inc("drain_send_interleaved");
+                    return send;
+                }
+            }
             syncWanted = false;
             drainSent++;
             return Companion.syncNext();
         }
+        return nextSendFrame(nowMs);
+    }
+
+    /** The next queued send from the engine, or null when there is none or it cannot go out now. */
+    private byte[] nextSendFrame(long nowMs) {
         byte[] preview = engine.previewTx(nowMs);
         if (preview == null) {
             return null;
@@ -498,6 +522,16 @@ public final class RadioSession {
         drainActive = false;
         drainAgain = false;
         drainSent = 0;
+        lastYieldAt = -1;
+        drainDeferred = false;
+    }
+
+    /** L1/diag: "deferred" (waiting for a channel), "active" (a pass is running) or "idle". */
+    public synchronized String drainState() {
+        if (drainActive) {
+            return "active";
+        }
+        return drainDeferred ? "deferred" : "idle";
     }
 
     /**
@@ -510,9 +544,19 @@ public final class RadioSession {
             engine.counters().inc("sync_coalesced");
             return;
         }
+        if (!engine.hasSelectedChannel()) {
+            // L1: reading a message takes it off the radio for good. With no channel chosen it could
+            // only reach the pane (last 10), never the room, so leave it queued on the radio
+            // (256 messages on Heltec V4) and read it once a channel is chosen.
+            drainDeferred = true;
+            engine.counters().inc("drain_deferred");
+            return;
+        }
+        drainDeferred = false;
         drainActive = true;
         drainAgain = false;
         drainSent = 0;
+        lastYieldAt = -1;
         syncWanted = true;
         engine.counters().inc("drain_started");
     }
@@ -532,6 +576,7 @@ public final class RadioSession {
             drainActive = false;
             drainAgain = false;
             drainSent = 0;
+            lastYieldAt = -1;
             if (again) {
                 engine.counters().inc("drain_extra_pass");
                 requestDrain();

@@ -143,9 +143,11 @@ public final class PluginHost {
                 chats.remove(0);
             }
             chats.add(new ChatLine(message.senderLabel(), message.text, true));
-            if (roomMessages.size() < CHAT_CAP) {
-                roomMessages.add(message);
+            if (roomMessages.size() >= Engine.ROOM_INBOX_CAP) {
+                roomMessages.remove(0);
+                engine.counters().inc("room_msg_host_overflow");
             }
+            roomMessages.add(message);
         }
         refreshStale(nowSeconds);
         return published;
