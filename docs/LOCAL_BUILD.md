@@ -44,7 +44,7 @@ Do not copy those into this tree.
 ./gradlew --no-daemon assembleCivRelease
 ```
 
-The flavor `civ` is real. The previous unsigned APK was `assembleRelease` without that flavor, from commit `856a81d`. This civ variant has not been assembled. The likely output, not yet confirmed, is `app/build/outputs/apk/civ/release/app-civ-release-unsigned.apk`. After it exists, from the repository root:
+The flavor `civ` is real. The previous unsigned APK was `assembleRelease` without that flavor, from commit `856a81d`. The unsigned output is `app/build/outputs/apk/civ/release/app-civ-release-unsigned.apk`. From the repository root:
 
 ```sh
 ./scripts/check-unsigned-release.sh app/build/outputs/apk/civ/release/app-civ-release-unsigned.apk

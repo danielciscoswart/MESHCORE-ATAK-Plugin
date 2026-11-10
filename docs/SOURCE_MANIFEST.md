@@ -1,5 +1,7 @@
 # Source, version, and license manifest
 
+> **Dated record.** This is the 2026-11-08 record of what was read and the decision to write an independent implementation. The licensing facts and protocol constants still apply. Notes about the SDK and the plugin being unbuilt (such as "what a later SDK drop would add") are out of date.
+
 Inspection date: 2026-11-08. Clones were shallow checkouts in a temporary directory. They are not vendored and were not modified. This continuation re-read the same pins. Nothing in those clones was edited.
 
 ## Authority
@@ -22,7 +24,7 @@ Pinned official revision, read as `origin/main` on 2026-11-08:
 | `meshtastic/ATAK-Plugin` @ `784530f8bc9271d59d33caf8afb40f464cab032f` (2026-06-04) | GPL-3.0 | Read `README.md` for the feature list. Did not copy source |
 | `meshcore-dev/MeshCore` @ `81dbae592ffad40b4212bc0b37e82b38da08f4bc` (2026-10-15) | MIT, Copyright (c) 2025 Scott Powell / rippleradios.com (`license.txt`) | Read `docs/companion_protocol.md` (header says last updated 2026-03-08, companion firmware v1.12.0+) and confirmed constants in `src/MeshCore.h`, `src/helpers/BaseChatMesh.cpp`, and `examples/companion_radio/MyMesh.cpp`. Did not copy source files |
 | `morluto/rea` @ `c5ed046d6e7000b27a12c01a1444f28cc1651c4a` (2026-11-08) | MIT, Copyright (c) 2026 morluto | Read the skill and README. Did not run or use it |
-| ATAK-CIV SDK | TAK Product Center terms. Not a public source repo | Not downloaded. No `com.atakmap` sources, no keystore, no APK |
+| ATAK-CIV SDK | TAK Product Center terms. Not a public source repo | Not included in this repository. No `com.atakmap` sources, no keystore, no APK |
 
 GPL-3.0 would allow a derivative of the meshcore-TAK Java **if** the ATAK template files were left behind and the GPL was kept. Those template files are the part this project cannot redistribute. The MCTAK document itself asks for a second, independent implementation. This tree takes that path. Protocol field layouts are implemented from the specification and from the MIT firmware's frame formats. No GPL source file is included.
 
@@ -66,4 +68,4 @@ A tak.gov ATAK-CIV 5.6 SDK (account-gated; no account was created for this tree)
 - nRF52 sets `SECMODE_ENC_WITH_MITM` and a PIN. ESP32 sets `ESP_LE_AUTH_REQ_SC_MITM_BOND` and a static PIN. This tree does not read or log the device-info PIN.
 - Channel 0 is created as `Public` with `PUBLIC_GROUP_PSK` base64 `izOH6cXN6mrJ5e26oRXNcg==`, which is hex `8b3387e9c5cdea6ac9e5edbaa115cd72` in the companion document. Hashtag keys are described there as the first 16 bytes of SHA-256 of the name, with the example `#test` → `9cd8fcf22a47333b591d96a2b848b73f`. Both were checked. The document says hashtag channels should not be treated as private.
 - `Packet.h` labels group datagrams unverified. Inbound CoT stays `unverified="true"`. A channel key is not a sender signature.
-- `onChannelDataRecv` queues the host frame and pushes only `PUSH_CODE_MSG_WAITING` (`0x83`). The session then sends one `CMD_SYNC_NEXT_MESSAGE`.
+- `onChannelDataRecv` queues the host frame and pushes only `PUSH_CODE_MSG_WAITING` (`0x83`). Version 0.7.4 and earlier then sent one `CMD_SYNC_NEXT_MESSAGE`. Version 0.7.5 reads the queue until the radio says there are no more messages (see `CHANGELOG.md`).

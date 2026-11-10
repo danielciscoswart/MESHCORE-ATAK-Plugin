@@ -1,5 +1,7 @@
 # ATAK-CIV SDK and signing
 
+> **Partly historical.** This note was written early, before the plugin had been compiled against the SDK, signed by the TAK Third Party Pipeline, or loaded in ATAK. Where it says the plugin is unbuilt, read `README.md` and `CHANGELOG.md` for the current state. The SDK licensing facts below still apply.
+
 Candidate baseline: **ATAK-CIV 5.6.x**. Public notes used to pick it:
 
 - Meshtastic ATAK plugin material has been described against ATAK 5.6.0.13.
@@ -7,7 +9,7 @@ Candidate baseline: **ATAK-CIV 5.6.x**. Public notes used to pick it:
 
 The ATAK-CIV plugin SDK is not a public Maven artifact. A 5.6.0.26 archive is on the maintainer's machine and was not copied here. The TAK software license reviewed with that archive allows use and derived applications and prohibits copying, publishing, or reverse engineering the SDK. This tree does not contain `main.jar`, takdev, samples, docs from the archive, or `android_keystore`.
 
-`app/` is original source that *references* a local SDK path. It was not compiled. `docs/ATAK_API_LOOKUP.md` lists every ATAK call and the public file it was read from. A missing symbol on 5.6.0.26 is a parent lookup, not a stub.
+`app/` is original source that *references* a local SDK path. It has since been compiled against the 5.6.0.26 SDK and built by the TAK Third Party Pipeline (see `CHANGELOG.md`). `docs/ATAK_API_LOOKUP.md` lists every ATAK call and the public file it was read from. A missing symbol on 5.6.0.26 is a parent lookup, not a stub.
 
 What is compiled here instead:
 

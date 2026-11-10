@@ -1,6 +1,6 @@
 # Feature parity
 
-> **Partly out of date.** This table was written for the early 0.2 design. Statements such as "not compiled", "no APK", and "unverified in ATAK" predate version 0.7.5, which was built by the TAK Third Party Pipeline and tried by one developer on one phone and one radio. It is still a useful list of what the code does and does not support. `README.md` has the current status and `CHANGELOG.md` has the history.
+> **Partly out of date.** This table was written for the early 0.2 design. Statements such as "not compiled", "no APK", "unverified in ATAK", and the whole "Release blockers that are still true" list at the end predate version 0.7.5, which was built by the TAK Third Party Pipeline and tried by one developer on one phone and one radio. It is still a useful list of what the code does and does not support. `README.md` has the current status and `CHANGELOG.md` has the history.
 
 Parity target: the **Meshtastic ATAK plugin** described at
 <https://meshtastic.org/docs/software/integrations/integrations-atak-plugin/>
