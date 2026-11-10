@@ -4,14 +4,6 @@ All notable changes to the MeshCore ATAK plugin. Version names come from `versio
 
 This project is early, experimental software. It has been tried by one developer on one phone and one radio, and it has not been field-tested.
 
-## Unreleased
-
-- New README with status, limits, install, build, privacy, and not-affiliated notes.
-- CI no longer pins an exact skip count for the optional tests.
-- Operator-specific names in test fixtures and comments were replaced with neutral placeholders.
-- Added `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`, and issue templates. Removed internal review notes from `docs/`. They stay in the git history.
-- Tightened `.gitignore` for SDK files, keys, and APKs.
-
 ## 0.7.5 (versionCode 12), 2026-11-10
 
 Signed by the TAK Third Party Pipeline (build 50936). SHA-256 of the signed APK: `b914981366364fd68b0287a9d3ead067d5f99f554aab3c2ba9b8840630fcab67`.
@@ -25,9 +17,18 @@ Signed by the TAK Third Party Pipeline (build 50936). SHA-256 of the signed APK:
 - A message id is remembered only after the send was queued, so a refused send can be retried. A true repeat gets an explanation instead of silence.
 - The unused outbound hold code was removed. Diagnostics gained drain counters and a list of recent inbound message timestamps (no text).
 
+Repository cleanup in the tagged source, no code change (in `app/` and `src/main/` only two code comments differ from the built tree):
+
+- New README with status, limits, install, build, privacy, what COPY DIAG includes, and not-affiliated notes.
+- CI no longer pins an exact skip count for the optional tests. It requires the four known optional checks to print their `skipped` lines, and it fails if the test script fails.
+- Operator-specific names in test fixtures and comments were replaced with neutral placeholders.
+- Added `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`, and issue and pull request templates. Added `docs/DESIGN.md` with the reasons behind four behaviors. Removed internal review notes from `docs/`. They stay in the git history. Marked three older notes as historical.
+- Tightened `.gitignore` for SDK files, keys, and APKs.
+
 ## 0.7.4 (versionCode 11), 2026-11-10
 
-- Room sends go through ATAK's plugin connector Intent, so what you type in the MeshCore room reaches the radio.
+- Room sends go through ATAK's plugin connector Intent, so what you type in the MeshCore room reaches the radio. Before this, text typed in the room showed in the chat window but was never sent, and there was no notice.
+- Diagnostics show which channel slot the radio reported for each received message (per-slot counters and a last-received line, no text). This settled where a message that looked like it came from the wrong channel really came from. No change to how messages are parsed.
 
 ## 0.7.3 (versionCode 10), 2026-11-09
 
