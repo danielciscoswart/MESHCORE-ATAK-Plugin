@@ -95,6 +95,12 @@ public final class AllTests {
         test("radio pushes are counted and never logged", V73Checks::pushesAreCountedAndNeverLogged);
         test("engine log is bounded", V73Checks::logIsBounded);
         test("v7.2 safety still holds", V73Checks::v72SafetyStillHolds);
+        test("H1 an old room is refused visibly", V73Checks::h1OldRoomIsRefusedVisibly);
+        test("H2 the mode is part of the room uid", V73Checks::h2ModeIsPartOfTheRoomUid);
+        test("H3 a full hold refuses the new message", V73Checks::h3FullHoldRefusesTheNewMessage);
+        test("H4 delivered and read receipts are not chat", V73Checks::h4ReceiptsAreNotChat);
+        test("(a) plugin chat that is not for all gets a prefix", V73Checks::haScopePrefixOnInboundPluginChat);
+        test("(b) delivered receipt is off by default", V73Checks::hbDeliveredReceiptIsOffByDefault);
         test("optional push codes vs official firmware", V73Checks::pushCodesMatchTheOfficialFirmware);
         test("optional mctak fixtures", AllTests::fixtures);
         test("optional official meshcore tree", TransportChecks::officialTree);
@@ -414,13 +420,14 @@ public final class AllTests {
         check(plis.get(0).unverified);
         holdUnknown(b, t + 2_000);
 
+        b.setDeliveredReceipts(true);
         eq("QUEUED", a.sendChat(Mctak.SCOPE_DIRECT, bSender(b), "", "psst", t + 400_000).status);
         exchange(a, b, t + 400_000);
         // v7.3 (G3): plugin chat from the chosen channel goes to the MeshCore room, not to a
         // general GeoChat event.
         List<Engine.RoomMessage> chats = b.drainRoomMessages();
         eq(1, chats.size());
-        eq("psst", chats.get(0).text);
+        eq("[direct to you] psst", chats.get(0).text);
         check(chats.get(0).senderLabel().endsWith("(MeshCore, unverified)"));
         eq(1L, b.counters().get("receipt_delivered_queued"));
         eq(0L, b.counters().get("receipt_read_queued"));

@@ -66,6 +66,7 @@ public final class MeshCoreAtakPlugin implements IPlugin {
     private final AtakChatRoom room = new AtakChatRoom();
     private boolean roomLoggerRegistered;
     private long roomRetryAtMs;
+    private Engine.RoomSpec roomSpecShown;
     private Pane pane;
     private TextView status;
     private TextView statusLine;
@@ -1151,7 +1152,7 @@ public final class MeshCoreAtakPlugin implements IPlugin {
         for (java.util.Map.Entry<String, Long> e : host.engine().counters().snapshot().entrySet()) {
             String k = e.getKey();
             if (k.startsWith("room_") || k.startsWith("chat_other") || k.startsWith("network_chat")
-                    || k.startsWith("push_") || k.startsWith("native_") || k.equals("cot_loop_dropped")) {
+                    || k.startsWith("push_") || k.startsWith("receipt_") || k.startsWith("native_") || k.equals("cot_loop_dropped")) {
                 sb.append(k).append('=').append(e.getValue()).append(' ');
             }
         }
@@ -1174,17 +1175,22 @@ public final class MeshCoreAtakPlugin implements IPlugin {
             return;
         }
         try {
+            Engine.RoomSpec previous = roomSpecShown;
             boolean changed = room.reconcile(spec);
+            roomSpecShown = spec;
             if (changed && room.present()) {
                 if (!setRoomLogger(true)) {
                     // A room that nobody listens to would let a message vanish silently.
                     room.remove();
+                    roomSpecShown = null;
                     roomRetryAtMs = now + 5_000L;
                     engine.counters().inc("room_logger_unavailable");
                     refuse("MeshCore chat room unavailable: ATAK comms not ready");
                     return;
                 }
-                String text = "Chat room ready: " + room.name();
+                // H2: when only the mode changed, say who can read what is typed now.
+                String notice = Engine.modeNotice(previous, spec);
+                String text = notice != null ? notice : "Chat room ready: " + room.name();
                 lastSendNote = text;
                 setTransient(text);
             } else if (changed) {
@@ -1193,6 +1199,7 @@ public final class MeshCoreAtakPlugin implements IPlugin {
         } catch (Throwable t) {
             Log.e(TAG, "room reconcile failed: " + t.getClass().getName());
             engine.counters().inc("room_reconcile_failed");
+            roomSpecShown = null;
             try {
                 room.remove();
                 setRoomLogger(false);
@@ -1205,6 +1212,7 @@ public final class MeshCoreAtakPlugin implements IPlugin {
 
     /** Take the room and its logger down. Safe to call twice. */
     private void removeRoom() {
+        roomSpecShown = null;
         try {
             room.remove();
         } finally {
@@ -1279,6 +1287,14 @@ public final class MeshCoreAtakPlugin implements IPlugin {
     private void drainRoomOutbound(long now) {
         if (host == null || roomLogger == null) {
             return;
+        }
+        int overflow = roomLogger.takeOverflow();
+        if (overflow > 0) {
+            // H3: a typed message did not fit the hold. Say so; it was not sent.
+            for (int i = 0; i < overflow && i < 50; i++) {
+                host.engine().counters().inc("room_send_overflow");
+            }
+            refuse("Not sent: too many messages at once");
         }
         int ignored = roomLogger.takeIgnored();
         for (int i = 0; i < ignored && i < 50; i++) {

@@ -121,13 +121,37 @@ public final class Engine {
         public final String name;
         public final String channelName;
         public final boolean pluginOnly;
+        /** Slot and name CRC, without the mode: the same for both modes of one channel. */
+        public final String channelKey;
 
-        RoomSpec(String uid, String name, String channelName, boolean pluginOnly) {
+        RoomSpec(String uid, String name, String channelName, boolean pluginOnly, String channelKey) {
             this.uid = uid;
             this.name = name;
             this.channelName = channelName;
             this.pluginOnly = pluginOnly;
+            this.channelKey = channelKey;
         }
+    }
+
+    /** Prefix of every room uid. Only a destination that starts with it is looked at. */
+    public static final String ROOM_UID_PREFIX = "MESHCORE-ROOM-";
+
+    /** H1: shown when a message is typed into a room that is no longer the current one. */
+    public static final String ROOM_CLOSED_WHY =
+            "Not sent: this MeshCore chat is closed. Use OPEN CHAT for the current one.";
+
+    /**
+     * H2: what to tell the user when only the send mode changed (same channel, new room uid).
+     * Null when nothing changed, or when the channel changed too.
+     */
+    public static String modeNotice(RoomSpec before, RoomSpec after) {
+        if (before == null || after == null || !before.channelKey.equals(after.channelKey)
+                || before.pluginOnly == after.pluginOnly) {
+            return null;
+        }
+        return after.pluginOnly
+                ? "Room now sends to ATAK plugin users only on " + after.channelName
+                : "Room now sends MeshCore text: anyone on " + after.channelName + " can read it";
     }
 
     /**
@@ -231,6 +255,7 @@ public final class Engine {
     private int teamRole = 0x90;
     private String callsign = "LEARNER";
     private boolean readReceipts;
+    private boolean deliveredReceipts;
     private int seq;
     private String transportStatus;
     private long lastBeaconMs = Long.MIN_VALUE / 4;
@@ -276,6 +301,18 @@ public final class Engine {
 
     public void setReadReceipts(boolean enabled) {
         this.readReceipts = enabled;
+    }
+
+    /**
+     * Recommendation (b): an automatic MCTAK "delivered" receipt is a radio transmission nobody typed.
+     * It is off by default until it has been tested on a phone. Read receipts need this too.
+     */
+    public void setDeliveredReceipts(boolean enabled) {
+        this.deliveredReceipts = enabled;
+    }
+
+    public boolean deliveredReceipts() {
+        return deliveredReceipts;
     }
 
     /**
@@ -940,9 +977,12 @@ public final class Engine {
             return null;
         }
         String name = roomChannelName(view.name);
-        String uid = "MESHCORE-ROOM-" + selected + "-" + Long.toHexString(crcValue(view.name));
+        String channelKey = selected + "-" + Long.toHexString(crcValue(view.name));
+        // H2: the mode is part of the uid, so a mode switch replaces the contact and a chat window
+        // that was opened for the other mode is refused (H1) instead of going to the wrong audience.
+        String uid = ROOM_UID_PREFIX + channelKey + (pluginOnlyChat ? "-P" : "-T");
         String title = "MeshCore: " + name + " (" + (pluginOnlyChat ? "plugin only" : "MeshCore text") + ")";
-        return new RoomSpec(uid, title, name, pluginOnlyChat);
+        return new RoomSpec(uid, title, name, pluginOnlyChat, channelKey);
     }
 
     /**
@@ -957,6 +997,11 @@ public final class Engine {
             counters.inc("room_send_no_room");
             Send blocked = refusedNotReady();
             return new Send("REFUSED", "no MeshCore room", blocked.why);
+        }
+        if (toRoomUid != null && toRoomUid.startsWith(ROOM_UID_PREFIX) && !spec.uid.equals(toRoomUid)) {
+            // H1: a window opened before a channel or mode change. Say so; never send, never stay silent.
+            counters.inc("room_send_stale");
+            return new Send("REFUSED", "old MeshCore room", ROOM_CLOSED_WHY);
         }
         if (toRoomUid == null || !spec.uid.equals(toRoomUid)) {
             counters.inc("chat_other_ignored");
@@ -1003,6 +1048,32 @@ public final class Engine {
 
     private void offerRoomMessage(String source, String sender, String text, String id, long timeSeconds,
                                   long nowMs) {
+        offerRoomMessage(source, sender, text, id, timeSeconds, nowMs, "");
+    }
+
+    /**
+     * Recommendation (a): a plugin chat whose MCTAK scope is not "all" was meant for one person or
+     * one named room. In the room it would look like a message to the whole channel, so its text
+     * starts with "[direct to ...]" or "[room ...]". The prefix is display only; duplicate checks
+     * use the text as sent.
+     */
+    private String scopePrefix(Mctak.GeoChat chat) {
+        if (chat.scope == Mctak.SCOPE_DIRECT) {
+            if (self != null && chat.dest == self.sender) {
+                return "[direct to you] ";
+            }
+            String who = callsigns.getOrDefault(chat.dest, Mctak.derivedUid(chat.dest));
+            return "[direct to " + displayText(who) + "] ";
+        }
+        if (chat.scope == Mctak.SCOPE_ROOM) {
+            String room = displayText(chat.room).trim();
+            return "[room " + (room.isEmpty() ? "unnamed" : room) + "] ";
+        }
+        return "";
+    }
+
+    private void offerRoomMessage(String source, String sender, String text, String id, long timeSeconds,
+                                  long nowMs, String prefix) {
         if (selected == null) {
             counters.inc("room_msg_no_channel");
             return;
@@ -1033,7 +1104,7 @@ public final class Engine {
             roomInbox.remove(0);
             counters.inc("room_inbox_overflow");
         }
-        roomInbox.add(new RoomMessage(source, displayText(sender), body, id, timeSeconds, nowMs));
+        roomInbox.add(new RoomMessage(source, displayText(sender), prefix + body, id, timeSeconds, nowMs));
         counters.inc("room_msg_in");
     }
 
@@ -1164,7 +1235,7 @@ public final class Engine {
             // ATAK's general chat. It is channel traffic whatever its MCTAK scope says.
             String name = callsigns.getOrDefault(sender, Mctak.derivedUid(sender));
             offerRoomMessage(RoomMessage.SOURCE_PLUGIN, name, parsed.chat.text,
-                    "p:" + dedup, parsed.chat.ts, nowMs);
+                    "p:" + dedup, parsed.chat.ts, nowMs, scopePrefix(parsed.chat));
             maybeReceipt(parsed.chat, sender, nowMs);
             return;
         }
@@ -1190,6 +1261,10 @@ public final class Engine {
     private void maybeReceipt(Mctak.GeoChat chat, int author, long nowMs) {
         if (chat.scope != Mctak.SCOPE_DIRECT || self == null || chat.dest != self.sender) {
             counters.inc("receipt_suppressed");
+            return;
+        }
+        if (!deliveredReceipts) {
+            counters.inc("receipt_off");
             return;
         }
         String key = Integer.toHexString(author) + ":" + chat.msgId;

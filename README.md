@@ -47,7 +47,7 @@ The BLE adapter is compiled separately. It needs the public Android 35 platform 
 | `src/test/java` | Unit, fuzz, simulated-radio, session, and lifecycle tests |
 | `FEATURE_PARITY.md` | Implemented, partial, unsupported, unverified |
 | `docs/V7_2_CHANGES.md` | v7.2 changes against v7.1, item by item (E1 to E10) |
-| `docs/V7_3_CHANGES.md` | v7.3 changes against v7.2 (G1 to G7: the MeshCore chat room) |
+| `docs/V7_3_CHANGES.md` | v7.3 changes against v7.2 (G1 to G7: the MeshCore chat room; H1 to H4 review changes) |
 | `docs/SOURCE_MANIFEST.md` | Repos, commits, licenses, and the reuse decision |
 | `docs/REA_LOG.md` | Which REA steps actually ran |
 
@@ -64,6 +64,8 @@ The ATAK-CIV SDK is distributed from tak.gov after an account login. It was not 
 - Channel possession is not sender authentication. Inbound CoT is marked `unverified="true"`.
 - Voice, imagery, and file transfer are refused.
 - Logs record channel index, name, and a SHA-256 fingerprint prefix. They do not record the 16-byte channel secret or the BLE PIN.
+- Only the one MeshCore chat room can transmit chat. Every other ATAK chat is ignored. The automatic MCTAK delivered receipt is off, so the radio sends nothing nobody typed.
+- Chat history: messages in the MeshCore room, typed and received over the radio, are saved in ATAK's own chat history on the phone, like any ATAK chat. In v7.2 radio text was only shown in the pane. Removing the room does not delete that history.
 - Datagrams longer than 165 bytes are not handed to the companion send frame. See the radio-limit note below.
 
 ## Radio-limit blocker

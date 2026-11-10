@@ -6,6 +6,7 @@ import com.atakmap.coremap.cot.event.CotEvent;
 
 import java.util.ArrayDeque;
 
+import dev.meshcore.atak.plugin.BoundedHold;
 import dev.meshcore.atak.plugin.PluginHost;
 
 /**
@@ -53,10 +54,9 @@ final class MeshCoreRoomLogger implements CommsLogger {
         }
     }
 
-    private final ArrayDeque<Outbound> pending = new ArrayDeque<Outbound>();
+    private final BoundedHold<Outbound> pending = new BoundedHold<Outbound>(MAX_PENDING);
     private final ArrayDeque<NetworkChat> network = new ArrayDeque<NetworkChat>();
     private int ignoredOther;
-    private int dropped;
 
     @Override
     public void logSend(CotEvent message, String[] toUids) {
@@ -77,13 +77,8 @@ final class MeshCoreRoomLogger implements CommsLogger {
             }
             return;
         }
-        synchronized (pending) {
-            if (pending.size() >= MAX_PENDING) {
-                pending.removeFirst();
-                dropped++;
-            }
-            pending.addLast(new Outbound(xml, new String[] {toUids[0]}));
-        }
+        // H3: a full hold refuses the new message and counts it; the tick shows "Not sent".
+        pending.offer(new Outbound(xml, new String[] {toUids[0]}));
     }
 
     @Override
@@ -124,18 +119,19 @@ final class MeshCoreRoomLogger implements CommsLogger {
 
     @Override
     public void dispose() {
-        synchronized (pending) {
-            pending.clear();
-        }
+        pending.clear();
         synchronized (network) {
             network.clear();
         }
     }
 
     Outbound pollOutbound() {
-        synchronized (pending) {
-            return pending.pollFirst();
-        }
+        return pending.poll();
+    }
+
+    /** H3: messages the user typed that did not fit the hold since the last call. */
+    int takeOverflow() {
+        return pending.takeRefused();
     }
 
     NetworkChat pollNetwork() {
@@ -153,17 +149,10 @@ final class MeshCoreRoomLogger implements CommsLogger {
         }
     }
 
-    int dropped() {
-        synchronized (pending) {
-            return dropped;
-        }
-    }
-
     private static boolean isChat(CotEvent message) {
         if (message == null) {
             return false;
         }
-        String type = message.getType();
-        return type != null && "b-t-f".equals(type);
+        return PluginHost.isChatType(message.getType());
     }
 }

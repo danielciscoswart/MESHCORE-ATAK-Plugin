@@ -10,8 +10,8 @@ While a private channel is chosen and the link is READY, ATAK's contact list hol
 
 ## G1. The room
 
-- `Engine.roomSpec()`: the room exists only when the link is READY, the radio's SELF_INFO is in, and a private channel is chosen. Public, hashtag, zero-key and empty channels never get a room. The uid is `MESHCORE-ROOM-<slot>-<crc32 of the channel name>`: no key, no fingerprint. The title is "MeshCore: <name> (plugin only)" or "(MeshCore text)"; the name is stripped of control characters and capped at 32 characters.
-- A mode switch renames the same contact (`setName` plus `dispatchChangeEvent`). A different channel gives a new uid, so the old contact is removed and a new one added.
+- `Engine.roomSpec()`: the room exists only when the link is READY, the radio's SELF_INFO is in, and a private channel is chosen. Public, hashtag, zero-key and empty channels never get a room. The uid is `MESHCORE-ROOM-<slot>-<crc32 of the channel name>-P` (plugin only) or `-T` (MeshCore text) (the mode suffix is v7.3H, see H2): no key, no fingerprint. The title is "MeshCore: <name> (plugin only)" or "(MeshCore text)"; the name is stripped of control characters and capped at 32 characters.
+- A mode switch or a different channel gives a new uid, so the old contact is removed and a new one added (v7.3H H2; in v7.3 a mode switch only renamed it).
 - `AtakChatRoom` (new, app module) keeps ATAK in step with `roomSpec()` once a second. The contact is an `IndividualContact` with a `PluginConnector` and no IP or GeoChat connector. A `PluginConnector` is what lets ATAK's `openConversation` open the chat; the absence of a network connector means ATAK has no address to send to.
 - Removal: the tick removes the room when `roomSpec()` is null; `onStop` calls `removeRoom()`, which removes the contact and unregisters the logger. If the comms logger cannot be registered, the room is removed again and the reason is shown ("MeshCore chat room unavailable: ATAK comms not ready"), because a room nobody listens to would drop messages silently.
 
@@ -65,3 +65,19 @@ The v7.2 diag showed `unhandled_88=21` and `unhandled_80=1`. Checked against mes
 
 Java tests in `src/test/java/.../V73Checks.java` (18 new, plus 3 existing tests edited, see below), and the source checks in `scripts/test-plugin-startup.sh` (the F3 checkbox checks became G1/G2/G3 checks).
 Existing tests changed because the behaviour they pinned was removed on purpose: `AllTests.radios` (inbound chat is now a room message), `PluginChecks.lifecycle` (a chat offered with no destination is ignored; the room is the send path), `V72Checks.e2*` (no GeoChat copy opt-in any more). Every other v7.2 test is untouched and passes.
+
+## v7.3H: Claude's review changes (H1 to H4) and recommendations (a) to (c)
+
+Same version, 0.7.3 / code 10. Claude reviewed 3fcfc7b: APPROVE WITH CHANGES.
+
+- **H1.** `Engine.sendFromRoom`: a uid that starts with `MESHCORE-ROOM-` but is not the current room returns `REFUSED` with "Not sent: this MeshCore chat is closed. Use OPEN CHAT for the current one." (`Engine.ROOM_CLOSED_WHY`, counter `room_send_stale`). It is never sent. With no room at all the answer is still the "radio not ready" sentence. A destination that is not a MeshCore room stays silent and counted.
+- **H2.** The mode is part of the room uid (`-P` or `-T`), so a mode switch replaces the contact, and a chat window opened for the other mode is refused by H1 instead of reaching the wrong audience. A switch shows a toast: "Room now sends MeshCore text: anyone on <channel> can read it" or "Room now sends to ATAK plugin users only on <channel>" (`Engine.modeNotice`, used by the plugin's room reconcile).
+- **H3.** The comms-logger hand-off is `plugin/BoundedHold` (no ATAK types). When it is full the new message is refused and counted, never an old one dropped; the tick shows "Not sent: too many messages at once" (counter `room_send_overflow`).
+- **H4.** `PluginHost.isChatType` accepts `b-t-f` exactly; the logger and `offerOutboundChat` both use it. A test pins `b-t-f-d`, `b-t-f-r` and other types as not chat.
+- **(a)** An inbound MCTAK chat whose scope is not "all" is shown with a prefix: `[direct to you]`, `[direct to <callsign or id>]`, `[room <name>]`. Display only; duplicate checks use the text as sent.
+- **(b)** The automatic MCTAK delivered (and read) receipt is off. `Engine.setDeliveredReceipts` (default false) gates `maybeReceipt`; the plugin never turns it on; counter `receipt_off`. The radio therefore transmits nothing for an incoming message. Receipts the plugin receives from others are still shown.
+- **(c)** Saved history: messages in the room, typed and received over the radio, are saved in ATAK's own chat history on the phone (ATAK's chat database), the same as any ATAK chat. In v7.2 radio text was only in the pane. Removing the room contact does not delete that history; clear it in ATAK's chat settings.
+
+Tests: 74 passed (76 with the firmware checkout), 0 failed. New: H1, H2, H3, H4, (a), (b). Mutation checks: each of H1, H2, H3, (a), (b) was disabled once and made the intended test fail.
+
+G6 phone test additions from Claude: before step 1 unload any other plugin that forwards chat or CoT (Meshtastic in particular) and note what is loaded; use a throwaway private channel with the antenna on (never transmit without an antenna); detect a leak with a second ATAK device on the same TAK server and Wi-Fi plus the server's message view; add a mode-switch test (window open, switch modes, type, expect the H1 refusal) and an inbound test (a message from the second radio shows as "(MeshCore, unverified)" and the radio sends nothing back). Stop and send the diag on any copy of a room message, any radio transmit from All Chat Rooms or a TAK chat, no toast at all when typing in the room, the room still present after DISCONNECT or a channel change, an incoming message without "unverified", or a crash.

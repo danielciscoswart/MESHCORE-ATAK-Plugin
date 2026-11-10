@@ -107,13 +107,17 @@ final class V73Checks {
         String fp = engine.selectedChannelRow().fingerprint;
         check(!spec.uid.toLowerCase().contains(fp.toLowerCase()));
         check(!spec.uid.contains("5a5a5a"));
-        // Mode switch renames the same room: same uid, new name.
+        check(spec.uid.endsWith("-P"));
+        // H2: a mode switch replaces the room (the mode is part of the uid) and renames it.
         engine.setPluginOnlyChat(false);
         Engine.RoomSpec text = engine.roomSpec();
-        eq(spec.uid, text.uid);
+        check(!spec.uid.equals(text.uid));
+        check(text.uid.endsWith("-T"));
+        eq(spec.channelKey, text.channelKey);
         eq("MeshCore: field-a (MeshCore text)", text.name);
         engine.setPluginOnlyChat(true);
         eq("MeshCore: field-a (plugin only)", engine.roomSpec().name);
+        eq(spec.uid, engine.roomSpec().uid);
         // Another channel replaces the room (new uid) and the switch is back ON.
         engine.setPluginOnlyChat(false);
         eq("OK", engine.selectChannel(3).status);
@@ -172,6 +176,10 @@ final class V73Checks {
         eq(1, tx.get(0)[1] & 0xFF);
         // With the switch OFF the same room sends native channel text (cmd 3).
         engine.setPluginOnlyChat(false);
+        // H2: the room for the other mode has another uid; the window for the old one is refused.
+        eq("REFUSED", host.offerOutboundChat(chatXml("GeoChat.10b", "old window"), new String[] {room}, now + 600_000L));
+        eq(0, engine.queued());
+        room = engine.roomSpec().uid;
         eq("QUEUED", host.offerOutboundChat(chatXml("GeoChat.11", "native from the room"), new String[] {room}, now + 600_000L));
         tx = drainAll(engine, now + 600_000L);
         eq(1, tx.size());
@@ -185,8 +193,12 @@ final class V73Checks {
         String oldRoom = engine.roomSpec().uid;
         eq("OK", engine.selectChannel(3).status);
         // A message typed into the room of the previous channel is not sent to the new channel.
-        eq("IGNORED", host.offerOutboundChat(chatXml("GeoChat.a", "late"), new String[] {oldRoom}, 5_000L));
+        // H1: refused with a visible sentence, never silent and never sent.
+        eq("REFUSED", host.offerOutboundChat(chatXml("GeoChat.a", "late"), new String[] {oldRoom}, 5_000L));
+        eq(Engine.ROOM_CLOSED_WHY, host.lastWhy());
+        eq("Not sent: this MeshCore chat is closed. Use OPEN CHAT for the current one.", host.lastWhy());
         eq(0, engine.queued());
+        eq(1L, engine.counters().get("room_send_stale"));
         // After a lost link there is no room: a send is refused with the E10 sentence.
         String room = engine.roomSpec().uid;
         engine.onLinkLost();
@@ -212,6 +224,7 @@ final class V73Checks {
         drainAll(engine, now);
         // Native: 159 - (name length + 2), and the 164-byte payload cap.
         engine.setPluginOnlyChat(false);
+        room = engine.roomSpec().uid;
         int nativeMax = Companion.maxNativeTextBytes("node".length());
         eq(153, nativeMax);
         now += 600_000L;
@@ -256,7 +269,8 @@ final class V73Checks {
         eq("to everyone", messages.get(0).text);
         eq("VIPER-1 (MeshCore, unverified)", messages.get(0).senderLabel());
         eq(Engine.RoomMessage.SOURCE_PLUGIN, messages.get(0).source);
-        eq("to someone else", messages.get(1).text);
+        // Recommendation (a): a message for one person does not look like one for the channel.
+        eq("[direct to MCTAK-0a0b0c0d] to someone else", messages.get(1).text);
         // No general GeoChat event is produced any more.
         for (Engine.Inbound inbound : engine.drainInbound()) {
             check(inbound.cot == null || !inbound.cot.contains("b-t-f"));
@@ -533,6 +547,183 @@ final class V73Checks {
     }
 
     // ---- safety invariants carried from v7.2 ----------------------------------------------
+
+    // ---- v7.3H: Claude's H1 to H4 and recommendations (a), (b) ----------------------------
+
+    static void h1OldRoomIsRefusedVisibly() {
+        PluginHost host = hostOnFieldA("node");
+        Engine engine = host.engine();
+        String oldRoom = engine.roomSpec().uid;
+        // Channel change: the window opened for field-a is now old.
+        eq("OK", engine.selectChannel(3).status);
+        Engine.Send direct = engine.sendFromRoom(oldRoom, "id-1", "late", 5_000L);
+        eq("REFUSED", direct.status);
+        eq("Not sent: this MeshCore chat is closed. Use OPEN CHAT for the current one.", direct.why);
+        eq(0, engine.queued());
+        // Through the host: same status, same sentence, nothing sent, and a retry is refused again
+        // (a refused message is not remembered as "sent once").
+        eq("REFUSED", host.offerOutboundChat(chatXml("old-1", "late"), new String[] {oldRoom}, 5_100L));
+        eq(Engine.ROOM_CLOSED_WHY, host.lastWhy());
+        eq("REFUSED", host.offerOutboundChat(chatXml("old-1", "late"), new String[] {oldRoom}, 5_200L));
+        eq(0, engine.queued());
+        eq(3L, engine.counters().get("room_send_stale"));
+        // A made-up room uid is refused the same way; the current room still sends.
+        eq("REFUSED", engine.sendFromRoom(PluginHost.ROOM_UID_PREFIX + "9-deadbeef-P", "id-2", "x", 5_300L).status);
+        eq("QUEUED", host.offerOutboundChat(chatXml("new-1", "now"), new String[] {engine.roomSpec().uid}, 5_400L));
+        eq(1, engine.queued());
+        // A destination that is not a MeshCore room at all is still silent and counted.
+        long ignored = engine.counters().get("chat_other_ignored");
+        eq("IGNORED", host.offerOutboundChat(chatXml("tak-1", "hi"), new String[] {"ANDROID-abc"}, 5_500L));
+        eq(ignored + 1, engine.counters().get("chat_other_ignored"));
+    }
+
+    static void h2ModeIsPartOfTheRoomUid() {
+        PluginHost host = hostOnFieldA("node");
+        Engine engine = host.engine();
+        Engine.RoomSpec plugin = engine.roomSpec();
+        check(plugin.uid.matches("MESHCORE-ROOM-1-[0-9a-f]+-P"));
+        engine.setPluginOnlyChat(false);
+        Engine.RoomSpec text = engine.roomSpec();
+        check(text.uid.matches("MESHCORE-ROOM-1-[0-9a-f]+-T"));
+        check(!plugin.uid.equals(text.uid));
+        // Same channel: only the suffix differs. No key or fingerprint in either.
+        eq(plugin.uid.substring(0, plugin.uid.length() - 2), text.uid.substring(0, text.uid.length() - 2));
+        // The window opened in plugin-only mode is refused after the switch; nothing goes out in the new mode.
+        eq("REFUSED", host.offerOutboundChat(chatXml("m-1", "typed in the old window"), new String[] {plugin.uid}, 5_000L));
+        eq(Engine.ROOM_CLOSED_WHY, host.lastWhy());
+        eq(0, engine.queued());
+        // And back: the text window is the old one now.
+        engine.setPluginOnlyChat(true);
+        eq(plugin.uid, engine.roomSpec().uid);
+        eq("REFUSED", host.offerOutboundChat(chatXml("m-2", "typed in the text window"), new String[] {text.uid}, 5_100L));
+        eq(0, engine.queued());
+        // The toast on a switch names the audience.
+        eq("Room now sends MeshCore text: anyone on field-a can read it", Engine.modeNotice(plugin, text));
+        eq("Room now sends to ATAK plugin users only on field-a", Engine.modeNotice(text, plugin));
+        // No notice when nothing changed, when there was no room, or when the channel changed too.
+        eq(null, Engine.modeNotice(plugin, plugin));
+        eq(null, Engine.modeNotice(null, plugin));
+        eq(null, Engine.modeNotice(plugin, null));
+        eq("OK", engine.selectChannel(3).status);
+        eq(null, Engine.modeNotice(plugin, engine.roomSpec()));
+    }
+
+    static void h3FullHoldRefusesTheNewMessage() {
+        dev.meshcore.atak.plugin.BoundedHold<String> hold = new dev.meshcore.atak.plugin.BoundedHold<>(8);
+        for (int i = 1; i <= 8; i++) {
+            check(hold.offer("m" + i));
+        }
+        eq(0, hold.takeRefused());
+        // The ninth is refused and counted; nothing already held is dropped.
+        eq(false, hold.offer("m9"));
+        eq(false, hold.offer("m10"));
+        eq(2, hold.takeRefused());
+        eq(0, hold.takeRefused());
+        eq(8, hold.size());
+        eq("m1", hold.poll());
+        // Room again after one was taken.
+        check(hold.offer("m11"));
+        for (int i = 2; i <= 8; i++) {
+            eq("m" + i, hold.poll());
+        }
+        eq("m11", hold.poll());
+        eq(null, hold.poll());
+        // The host logger is the only user: it uses the hold, never removeFirst.
+        try {
+            String logger = new String(Files.readAllBytes(java.nio.file.Paths.get(
+                    "app/src/main/java/dev/meshcore/atak/host/MeshCoreRoomLogger.java")), StandardCharsets.UTF_8);
+            check(logger.contains("BoundedHold"));
+            check(!logger.contains("pending.removeFirst"));
+        } catch (java.io.IOException ex) {
+            // Run from another directory: the source check script covers this too.
+        }
+    }
+
+    static void h4ReceiptsAreNotChat() {
+        check(PluginHost.isChatType("b-t-f"));
+        eq(false, PluginHost.isChatType("b-t-f-d"));
+        eq(false, PluginHost.isChatType("b-t-f-r"));
+        eq(false, PluginHost.isChatType("b-t-f-x"));
+        eq(false, PluginHost.isChatType("b-t"));
+        eq(false, PluginHost.isChatType("a-f-G-U-C"));
+        eq(false, PluginHost.isChatType(""));
+        eq(false, PluginHost.isChatType(null));
+        PluginHost host = hostOnFieldA("node");
+        Engine engine = host.engine();
+        String room = engine.roomSpec().uid;
+        // A delivered or read receipt addressed to the room is ignored: nothing queued, no refusal text.
+        String delivered = chatXml("rcpt-d", "x").replace("type=\"b-t-f\"", "type=\"b-t-f-d\"");
+        String read = chatXml("rcpt-r", "x").replace("type=\"b-t-f\"", "type=\"b-t-f-r\"");
+        check(delivered.contains("b-t-f-d") && read.contains("b-t-f-r"));
+        eq("IGNORED", host.offerOutboundChat(delivered, new String[] {room}, 5_000L));
+        eq("", host.lastWhy());
+        eq("IGNORED", host.offerOutboundChat(read, new String[] {room}, 5_100L));
+        eq(0, engine.queued());
+        // The host logger uses the same check.
+        try {
+            String logger = new String(Files.readAllBytes(java.nio.file.Paths.get(
+                    "app/src/main/java/dev/meshcore/atak/host/MeshCoreRoomLogger.java")), StandardCharsets.UTF_8);
+            check(logger.contains("PluginHost.isChatType("));
+            check(!logger.contains("\"b-t-f\".equals"));
+        } catch (java.io.IOException ex) {
+            // Run from another directory: the source check script covers this too.
+        }
+    }
+
+    static void haScopePrefixOnInboundPluginChat() {
+        PluginHost host = hostOnFieldA("node");
+        Engine engine = host.engine();
+        engine.receiveFrame(Companion.channelDataRecv(4, 1, 1, Mctak.DATA_TYPE_DEV, mctakIdent(0x01020304, 1, "VIPER-1")), 2_000L);
+        engine.receiveFrame(Companion.channelDataRecv(4, 1, 1, Mctak.DATA_TYPE_DEV,
+                mctakChat(0x01020304, 2, 0x2001, Mctak.SCOPE_ALL, 0, "all")), 2_100L);
+        engine.receiveFrame(Companion.channelDataRecv(4, 1, 1, Mctak.DATA_TYPE_DEV,
+                mctakChat(0x01020304, 3, 0x2002, Mctak.SCOPE_DIRECT, 0x11111111, "mine")), 2_200L);
+        engine.receiveFrame(Companion.channelDataRecv(4, 1, 1, Mctak.DATA_TYPE_DEV,
+                mctakChat(0x01020304, 4, 0x2003, Mctak.SCOPE_DIRECT, 0x0A0B0C0D, "theirs")), 2_300L);
+        Mctak.Header header = new Mctak.Header(0, false, Mctak.KIND_GEOCHAT, 0x01020304, 5);
+        Mctak.GeoChat roomChat = new Mctak.GeoChat(1_800_000_000L, 0x2004, Mctak.SCOPE_ROOM, 0, "Alpha\u0007team", "room text");
+        engine.receiveFrame(Companion.channelDataRecv(4, 1, 1, Mctak.DATA_TYPE_DEV, Mctak.frame(header, roomChat.body())), 2_400L);
+        List<Engine.RoomMessage> m = engine.drainRoomMessages();
+        eq(4, m.size());
+        eq("all", m.get(0).text);
+        eq("[direct to you] mine", m.get(1).text);
+        eq("[direct to MCTAK-0a0b0c0d] theirs", m.get(2).text);
+        eq("[room Alpha team] room text", m.get(3).text);
+        // Every one keeps the unverified label.
+        for (Engine.RoomMessage one : m) {
+            check(one.senderLabel().endsWith("(MeshCore, unverified)"));
+        }
+    }
+
+    static void hbDeliveredReceiptIsOffByDefault() {
+        PluginHost host = hostOnFieldA("node");
+        Engine engine = host.engine();
+        eq(false, engine.deliveredReceipts());
+        engine.receiveFrame(Companion.channelDataRecv(4, 1, 1, Mctak.DATA_TYPE_DEV, mctakIdent(0x01020304, 1, "VIPER-1")), 2_000L);
+        engine.receiveFrame(Companion.channelDataRecv(4, 1, 1, Mctak.DATA_TYPE_DEV,
+                mctakChat(0x01020304, 2, 0x3001, Mctak.SCOPE_DIRECT, 0x11111111, "for me")), 2_100L);
+        // The message still reaches the room, but the radio queues nothing in reply.
+        eq(1, engine.drainRoomMessages().size());
+        eq(0, engine.queued());
+        eq(0L, engine.counters().get("receipt_delivered_queued"));
+        eq(1L, engine.counters().get("receipt_off"));
+        eq(0, drainAll(engine, 3_000L).size());
+        // With the flag on (tests only; the plugin never sets it) the old behaviour is back.
+        engine.setDeliveredReceipts(true);
+        engine.receiveFrame(Companion.channelDataRecv(4, 1, 1, Mctak.DATA_TYPE_DEV,
+                mctakChat(0x01020304, 3, 0x3002, Mctak.SCOPE_DIRECT, 0x11111111, "again")), 2_200L);
+        eq(1L, engine.counters().get("receipt_delivered_queued"));
+        // The flag is not touched by the plugin code.
+        try {
+            for (String f : new String[] {"app/src/main/java/dev/meshcore/atak/host/MeshCoreAtakPlugin.java",
+                    "src/main/java/dev/meshcore/atak/plugin/PluginHost.java"}) {
+                String src = new String(Files.readAllBytes(java.nio.file.Paths.get(f)), StandardCharsets.UTF_8);
+                check(!src.contains("setDeliveredReceipts"));
+            }
+        } catch (java.io.IOException ex) {
+            // Run from another directory: the source check script covers this too.
+        }
+    }
 
     static void v72SafetyStillHolds() {
         PluginHost host = host("node");

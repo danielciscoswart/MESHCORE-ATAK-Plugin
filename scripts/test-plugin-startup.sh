@@ -173,6 +173,23 @@ if "(MeshCore, unverified)" in room_chat or "__meshcore" not in room_chat:
     raise SystemExit("G3: roomChat must carry the loop marker; the label comes from RoomMessage.senderLabel()")
 if 'LABEL = "(MeshCore, unverified)"' not in engine_src:
     raise SystemExit("G3: the unverified label is missing")
+# v7.3H checks
+if "BoundedHold" not in logger or "pending.removeFirst" in logger or "pending.pollFirst" in logger:
+    raise SystemExit("H3: the outbound hold must refuse a new message when full, not drop an old one")
+if "takeOverflow()" not in text or "Not sent: too many messages at once" not in text:
+    raise SystemExit("H3: a full hold must show 'Not sent: too many messages at once'")
+if "PluginHost.isChatType(" not in logger or '"b-t-f".equals' in logger:
+    raise SystemExit("H4: the logger must use the shared chat type check")
+if "Engine.modeNotice(" not in text:
+    raise SystemExit("H2: a mode switch must show a toast naming the new audience")
+if 'ROOM_UID_PREFIX + channelKey + (pluginOnlyChat ? "-P" : "-T")' not in engine_src:
+    raise SystemExit("H2: the mode must be part of the room uid")
+if "ROOM_CLOSED_WHY" not in engine_src or "room_send_stale" not in engine_src:
+    raise SystemExit("H1: an old room must be refused visibly")
+if "setDeliveredReceipts" in text or "setDeliveredReceipts" in host_src:
+    raise SystemExit("(b): the plugin must not turn the automatic delivered receipt on")
+if "if (!deliveredReceipts)" not in engine_src:
+    raise SystemExit("(b): the automatic delivered receipt must be gated by its flag")
 manifest_text = manifest.read_text()
 if "@mipmap/ic_launcher" not in manifest_text or "ic_meshcore" in manifest_text:
     raise SystemExit("manifest icon is not the png mipmap")

@@ -254,7 +254,7 @@ public final class PluginHost {
             engine.counters().inc("cot_loop_dropped");
             return "DROP_LOOP";
         }
-        if (!"b-t-f".equals(attr(cot, "type"))) {
+        if (!isChatType(attr(cot, "type"))) {
             engine.counters().inc("chat_other_ignored");
             return "IGNORED";
         }
@@ -273,7 +273,16 @@ public final class PluginHost {
     }
 
     /** Prefix of every room uid. Only a destination that starts with it is looked at. */
-    public static final String ROOM_UID_PREFIX = "MESHCORE-ROOM-";
+    public static final String ROOM_UID_PREFIX = Engine.ROOM_UID_PREFIX;
+
+    /**
+     * H4: true only for a chat message, type {@code b-t-f} exactly. The delivered and read
+     * receipts ATAK may send for a message ({@code b-t-f-d}, {@code b-t-f-r}) and any other
+     * type are not chat and are never looked at. The host comms logger uses this same check.
+     */
+    public static boolean isChatType(String type) {
+        return "b-t-f".equals(type);
+    }
 
     /** G3: room messages the last {@link #pump} took from the engine. The caller shows them. */
     public List<Engine.RoomMessage> takeRoomMessages() {
