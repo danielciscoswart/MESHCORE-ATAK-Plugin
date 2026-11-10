@@ -8,8 +8,8 @@ import java.util.List;
  * Connection stages for one companion radio link. No Android types, so the
  * rules can be tested on a JVM without a phone.
  *
- * <p>Flow: IDLE, SCAN, CONNECTING, PAIRING, DISCOVER, MTU, NOTIFY, HANDSHAKE,
- * READY. Any stage can end in FAILED with the stage name, a reason and, when
+ * <p>Flow: IDLE, SCAN, CHOOSE (first time only: the user picks the radio),
+ * CONNECTING, PAIRING, DISCOVER, MTU, NOTIFY, HANDSHAKE, READY. Any stage can end in FAILED with the stage name, a reason and, when
  * Android gave one, the GATT status code.
  *
  * <p>The rule that fixes the v6 self-cancel bug (B1): the link may only be
@@ -22,7 +22,7 @@ import java.util.List;
  * state.
  */
 public final class LinkMachine {
-    public enum State { IDLE, SCAN, CONNECTING, PAIRING, DISCOVER, MTU, NOTIFY, HANDSHAKE, READY, FAILED }
+    public enum State { IDLE, SCAN, CHOOSE, CONNECTING, PAIRING, DISCOVER, MTU, NOTIFY, HANDSHAKE, READY, FAILED }
 
     /** "No GATT status" marker for history entries. */
     public static final int NO_STATUS = Integer.MIN_VALUE;
@@ -30,6 +30,8 @@ public final class LinkMachine {
     public static final long SCAN_WINDOW_MS = 15_000L;
     /** After the first match, wait this long for a stronger one, then connect. */
     public static final long EARLY_CONNECT_WAIT_MS = 2_000L;
+    /** E1: how long the radio dialog may stay open before the attempt is dropped. */
+    public static final long CHOOSE_TIMEOUT_MS = 120_000L;
     public static final long CONNECT_TIMEOUT_MS = 20_000L;
     public static final long PAIRING_TIMEOUT_MS = 60_000L;
     public static final long DISCOVER_TIMEOUT_MS = 10_000L;
@@ -65,6 +67,8 @@ public final class LinkMachine {
     private int failStatus = NO_STATUS;
     private boolean autoRetry;
     private boolean reachedReady;
+    private long handshakeStartMs;
+    private long handshakeMs = -1L;
     private final List<Entry> history = new ArrayList<Entry>();
     private Listener listener;
 
@@ -152,14 +156,23 @@ public final class LinkMachine {
                 failStatus = NO_STATUS;
                 failStage = State.IDLE;
                 reachedReady = false;
+                handshakeStartMs = 0L;
+                handshakeMs = -1L;
             } else if (to == State.IDLE || to == State.FAILED || !inProgressLocked()) {
                 return false;
             }
             state = to;
             stageStartMs = nowMs;
+            if (to == State.HANDSHAKE) {
+                handshakeStartMs = nowMs;
+                handshakeMs = -1L;
+            }
             if (to == State.READY) {
                 reachedReady = true;
                 autoRetry = true;
+                if (handshakeStartMs > 0L) {
+                    handshakeMs = nowMs - handshakeStartMs;
+                }
             }
             entry = record(nowMs, to, detail, status);
             l = listener;
@@ -215,6 +228,7 @@ public final class LinkMachine {
     public static long limitMs(State s) {
         switch (s) {
             case SCAN: return SCAN_SAFETY_MS;
+            case CHOOSE: return CHOOSE_TIMEOUT_MS;
             case CONNECTING: return CONNECT_TIMEOUT_MS;
             case PAIRING: return PAIRING_TIMEOUT_MS;
             case DISCOVER: return DISCOVER_TIMEOUT_MS;
@@ -255,6 +269,8 @@ public final class LinkMachine {
         switch (state) {
             case SCAN:
                 return "Scanning " + secondsLeft(nowMs, SCAN_WINDOW_MS) + "s\u2026";
+            case CHOOSE:
+                return "Choose radio\u2026";
             case CONNECTING:
             case DISCOVER:
             case MTU:
@@ -282,6 +298,14 @@ public final class LinkMachine {
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * E4: milliseconds from entering HANDSHAKE to entering READY on the latest
+     * attempt, or -1 when that has not happened.
+     */
+    public synchronized long handshakeMs() {
+        return handshakeMs;
     }
 
     public synchronized boolean reachedReady() {

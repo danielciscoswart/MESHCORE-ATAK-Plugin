@@ -31,7 +31,7 @@ final class PluginChecks {
         byte[] secret = new byte[16];
         java.util.Arrays.fill(secret, (byte) 7);
         engine.receiveFrame(Companion.channelInfo(1, "field-a", secret), now);
-        eq("OK", engine.selectFirstTeamChannel().status);
+        eq("OK", engine.selectChannel(1).status);
 
         byte[] first = datagram(0x01020304, 1);
         byte[] second = datagram(0x01020304, 2);

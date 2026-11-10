@@ -66,8 +66,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:ellipsize="end"
-            android:maxLines="1"
-            android:singleLine="true"
+            android:maxLines="2"
             android:paddingTop="2dp"
             android:text="@string/status_line_idle"
             android:textSize="14sp" />
@@ -86,6 +85,41 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/meshcore_forget"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:minHeight="40dp"
+                    android:textAllCaps="false"
+                    android:textSize="12sp"
+                    android:text="@string/forget_radio" />
+
+                <Button
+                    android:id="@+id/meshcore_choose_channel"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:minHeight="40dp"
+                    android:textAllCaps="false"
+                    android:textSize="12sp"
+                    android:text="@string/choose_channel" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/meshcore_channels"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="4dp"
+                android:text="@string/channels_none"
+                android:textSize="11sp"
+                android:typeface="monospace" />
 
             <Button
                 android:id="@+id/meshcore_opt_in"
@@ -111,19 +145,45 @@
                 android:maxLength="200"
                 android:textSize="12sp" />
 
+            <CheckBox
+                android:id="@+id/meshcore_plugin_only"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:text="@string/plugin_only"
+                android:textSize="12sp" />
+
             <Button
                 android:id="@+id/meshcore_send"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:textAllCaps="false"
                 android:text="@string/send_chat" />
+
+            <TextView
+                android:id="@+id/meshcore_chat_hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/chat_hint_long"
+                android:textSize="11sp" />
 
             <CheckBox
                 android:id="@+id/meshcore_watch"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:visibility="gone"
                 android:checked="false"
                 android:text="@string/watch_geochat"
                 android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/meshcore_inbox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="6dp"
+                android:text="@string/inbox_none"
+                android:textIsSelectable="true"
+                android:textSize="11sp" />
 
             <TextView
                 android:id="@+id/meshcore_status"

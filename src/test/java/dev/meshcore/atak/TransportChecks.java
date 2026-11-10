@@ -44,7 +44,7 @@ final class TransportChecks {
         check(exact.length <= RadioLimits.MAX_FRAME_SIZE);
 
         Engine engine = ready(1_000L);
-        eq("OK", engine.selectFirstTeamChannel().status);
+        eq("OK", engine.selectChannel(1).status);
         eq(1, selectedFromLog(engine));
         eq("QUEUED", engine.joinSelected(1_000L).status);
         byte[] identFrame = engine.drainTx(1_000L).get(0);
@@ -108,7 +108,7 @@ final class TransportChecks {
         handshake(link, live, now);
 
         check(link.ready());
-        eq("OK", live.selectFirstTeamChannel().status);
+        eq("OK", live.selectChannel(1).status);
         String pin = "13572468";
         for (String line : link.trace()) {
             check(!line.toLowerCase().contains(pin));
@@ -197,6 +197,16 @@ final class TransportChecks {
         check(myMesh.contains("#define CMD_SEND_CHANNEL_DATA         62"));
         check(myMesh.contains("#define MAX_CHANNEL_DATA_LENGTH       (MAX_FRAME_SIZE - 9)"));
         check(myMesh.contains("payload_len > MAX_GROUP_DATA_LENGTH"));
+        // v7.2: opcodes and limits the native-text and stats paths rely on.
+        check(myMesh.contains("#define CMD_SEND_CHANNEL_TXT_MSG      3"));
+        check(myMesh.contains("#define CMD_GET_STATS                 56"));
+        String chat = Files.readString(root.resolve("src/helpers/BaseChatMesh.h"));
+        check(chat.contains("#define MAX_TEXT_LEN    (10*CIPHER_BLOCK_SIZE)"));
+        String chatCpp = Files.readString(root.resolve("src/helpers/BaseChatMesh.cpp"));
+        check(chatCpp.contains("createGroupDatagram(PAYLOAD_TYPE_GRP_TXT, channel, temp, 5 + prefix_len + text_len)"));
+        check(chatCpp.contains("createGroupDatagram(PAYLOAD_TYPE_GRP_DATA"));
+        String meshCpp = Files.readString(root.resolve("src/Mesh.cpp"));
+        check(meshCpp.contains("Utils::encryptThenMAC(channel.secret"));
         check(myMesh.contains("writeErrFrame(ERR_CODE_ILLEGAL_ARG);"));
         String doc = Files.readString(root.resolve("docs/companion_protocol.md"));
         check(doc.contains("6E400001-B5A3-F393-E0A9-E50E24DCCA9E"));
@@ -247,6 +257,11 @@ final class TransportChecks {
         }
         check(live.channel(1) != null);
         check(live.channel(1).fingerprint != null);
+        // E6: the first thing after READY is one read-only core stats request.
+        link.tick(now + 700L);
+        byte[] stats = link.pollWrite();
+        check(stats != null && (stats[0] & 0xFF) == Companion.CMD_GET_STATS);
+        link.onNotification(Companion.statsCore(3900, 1_000L, 0, 0), now + 720L);
     }
 
     private static Engine ready(long now) {
@@ -312,9 +327,13 @@ final class TransportChecks {
         session.tick(now);
         byte[] app = session.pollWrite();
         check(app != null);
+        // E8: native text is no longer discarded. A frame too short to parse is counted, not shown.
         session.onNotification(new byte[] {Companion.PACKET_CHANNEL_MSG, 0x00}, now + 10);
-        check(engine.counters().get("native_text_unsupported") >= 1);
-        eq("NATIVE_TEXT_UNSUPPORTED", engine.transportStatus());
+        check(engine.nativeInbox().isEmpty());
+        check(engine.counters().get("native_text_bad") >= 1);
+        session.onNotification(Companion.channelTextV3(20, 1, 2, 1_700_000_000L, "hello"), now + 20);
+        eq(1, engine.nativeInbox().size());
+        check(engine.nativeInbox().get(0).display().startsWith("[" + Engine.NativeMessage.LABEL + "]"));
         eq(0L, engine.counters().get("receipt_delivered_queued"));
         session.onNotification(new byte[] {Companion.PACKET_ERROR, RadioLimits.ERR_ILLEGAL_ARG}, now + 90);
         eq("RADIO_ERROR_6", engine.transportStatus());

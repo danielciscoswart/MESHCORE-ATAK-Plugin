@@ -10,7 +10,7 @@ States are for this tree after the debug compile of `b4d9f5e` and the release-co
 | Public, hashtag, derived-hashtag, and all-zero keys | Refused for team traffic. A fingerprint is not sender identity |
 | Sequence across process restart | One integer, restored by the plugin. Not a log of identities |
 | Radio `PACKET_ERROR` and send timeout | Status `RADIO_ERROR_*` or `SEND_TIMEOUT`. Not a delivery receipt |
-| Native MeshCore text frames | Counted as `NATIVE_TEXT_UNSUPPORTED` and not shown as chat |
+| Native MeshCore text frames | v7.2: parsed (frames 7, 8, 16, 17) and shown in a ten-message inbox, always labelled `MeshCore, unverified`. Never turned into CoT. Not sent to MCTAK. |
 | Plugin pane chat, opt-in beacon, internal CoT publish | Source compiled in the `b4d9f5e` debug javac. Not run inside ATAK |
 | Experimental ATAK GeoChat copy | Default off. `CommsLogger` only. Untested at runtime |
 | `PreSendProcessor` | Not used |

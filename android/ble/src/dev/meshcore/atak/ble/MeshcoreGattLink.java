@@ -25,10 +25,14 @@ import android.os.ParcelUuid;
 import android.provider.Settings;
 import android.util.Log;
 
+import dev.meshcore.atak.engine.Engine;
+import dev.meshcore.atak.plugin.PluginState;
 import dev.meshcore.atak.transport.LinkMachine;
 import dev.meshcore.atak.transport.LinkRules;
+import dev.meshcore.atak.transport.RadioChoice;
 import dev.meshcore.atak.transport.RadioLimits;
 import dev.meshcore.atak.transport.RadioSession;
+import dev.meshcore.atak.transport.WriteFailureTracker;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -52,15 +56,24 @@ import java.util.UUID;
  * companion document says the same. Frames are not split. The PIN is not
  * read from device-info and is not logged. Characteristic values are not logged.
  *
- * <p>v7 connect path (one explicit state machine, see {@link LinkMachine}):
- * IDLE, SCAN, CONNECTING, PAIRING, DISCOVER, MTU, NOTIFY, HANDSHAKE, READY or
- * FAILED(reason, status). A bonded {@code MeshCore*} device is tried first and
- * connected directly. Otherwise an unfiltered scan runs, and the link connects
- * on the first match after waiting at most 2 s for a stronger one. If the
- * device is not bonded the link connects first and calls createBond() after the
+ * <p>Connect path (one explicit state machine, see {@link LinkMachine}):
+ * IDLE, SCAN, CHOOSE, CONNECTING, PAIRING, DISCOVER, MTU, NOTIFY, HANDSHAKE,
+ * READY or FAILED(reason, status).
+ *
+ * <p>v7.2 (E1): the link never picks a radio by itself. The first time, an
+ * unfiltered scan runs and every MeshCore match is handed to the host in
+ * {@link Listener#onChooseRadio}; the user picks one, and its address is saved.
+ * Later connects go straight to the saved address: a still-paired radio is
+ * connected by address, an unpaired one is scanned for by that address only.
+ * If the device is not bonded the link connects first and calls createBond() after the
  * connection is up, then waits for BOND_BONDED (up to 60 s) before discovering
- * services. Stage time limits: connect 20 s, discover 10 s, MTU 5 s,
+ * services. Stage time limits: choose 120 s, connect 20 s, discover 10 s, MTU 5 s,
  * notifications 5 s. Every failure records its stage and the GATT status.
+ *
+ * <p>v7.2 (E4, E5): the next command is written as soon as the previous reply
+ * arrives (60 ms gap, never two GATT writes at once); the 1 s host tick is a
+ * fallback. A failed write waits up to 2 s for the disconnect callback so its
+ * status is the one recorded.
  *
  * <p>Threading: every GATT and scan callback is run on the Android main
  * thread (the handler overload of connectGatt on API 26+, an explicit post on
@@ -84,6 +97,12 @@ public final class MeshcoreGattLink {
 
         /** A final outcome worth a toast: Ready, Failed: reason, or Lost. */
         void onOutcome(String text);
+
+        /** E1: the scan ended with these matches and no saved radio. Ask the user which one. */
+        void onChooseRadio(List<RadioChoice.Candidate> candidates);
+
+        /** E1: the user chose (and the link saved) this radio. The host turns sending off. */
+        void onRadioChosen(String address, String name);
     }
 
     public static final class PermissionReport {
@@ -137,6 +156,8 @@ public final class MeshcoreGattLink {
 
     private static final int SEEN_CAP = 200;
     private static final int WRITE_REFUSAL_LIMIT = 5;
+    /** How long to wait for onCharacteristicWrite before assuming it was lost. */
+    private static final long WRITE_CALLBACK_WAIT_MS = 5_000L;
     private static final UUID SERVICE = UUID.fromString(RadioLimits.SERVICE_UUID);
     private static final ParcelUuid SERVICE_PARCEL = new ParcelUuid(SERVICE);
 
@@ -170,14 +191,19 @@ public final class MeshcoreGattLink {
         }
     };
 
-    /** Connect early once the stronger-match wait has passed. */
-    private final Runnable earlyConnect = new Runnable() {
+    /** E4: write the next command once the 60 ms gap allows. Posted after a notification or a completed write. */
+    private final Runnable step = new Runnable() {
         @Override
         public void run() {
-            long now = System.currentTimeMillis();
-            if (machine.state() == LinkMachine.State.SCAN && scanning && bestMatch != null && gatt == null) {
-                connectTo(bestMatch.device, bestMatch.label, "early", now);
-            }
+            stepNow(System.currentTimeMillis());
+        }
+    };
+
+    /** E5: gives up waiting for the disconnect callback after a failed write. */
+    private final Runnable writeFailureCheck = new Runnable() {
+        @Override
+        public void run() {
+            resolveWriteFailureByTimeout(System.currentTimeMillis());
         }
     };
 
@@ -194,11 +220,16 @@ public final class MeshcoreGattLink {
     private long lastCloseMs;
     /** Start times of recent scans, for Android's 5-starts-per-30-s limit. */
     private final List<Long> scanStarts = new ArrayList<Long>();
-    private long firstMatchMs;
     private String targetLabel = "";
     /** Address -> best sighting of the current or most recent scan. */
     private final Map<String, Sighting> seen = new LinkedHashMap<String, Sighting>();
-    private Sighting bestMatch;
+    /** E1: when set, this scan accepts only this address (a saved radio that is not paired). */
+    private String wantedAddress;
+    private PluginState state;
+    /** E4: a GATT write was accepted and its onCharacteristicWrite has not arrived. */
+    private boolean writeInFlight;
+    private long writeSentMs;
+    private final WriteFailureTracker writeFailure = new WriteFailureTracker();
 
     public MeshcoreGattLink(RadioSession session) {
         this.session = session;
@@ -223,6 +254,11 @@ public final class MeshcoreGattLink {
 
     public void setListener(Listener listener) {
         this.listener = listener;
+    }
+
+    /** Where the chosen radio is remembered. Without it every connect asks again. */
+    public void setState(PluginState state) {
+        this.state = state;
     }
 
     public LinkMachine machine() {
@@ -275,6 +311,8 @@ public final class MeshcoreGattLink {
             case SCAN:
                 return "scanning " + machine.secondsLeft(nowMs, LinkMachine.SCAN_WINDOW_MS)
                         + "s " + summarizeSeen(3);
+            case CHOOSE:
+                return "choose your radio in the dialog";
             case CONNECTING:
                 return "connecting " + targetLabel;
             case PAIRING:
@@ -330,7 +368,10 @@ public final class MeshcoreGattLink {
         }
         session.setWritesEnabled(true);
         this.appContext = context.getApplicationContext() != null ? context.getApplicationContext() : context;
-        mainHandler.removeCallbacks(earlyConnect);
+        mainHandler.removeCallbacks(step);
+        writeFailure.clear();
+        writeInFlight = false;
+        wantedAddress = null;
         if (!machine.enter(LinkMachine.State.SCAN, nowMs, "start", LinkMachine.NO_STATUS)) {
             return StartResult.BUSY;
         }
@@ -346,23 +387,34 @@ public final class MeshcoreGattLink {
             failLink(nowMs, "bluetooth is off", LinkMachine.NO_STATUS);
             return StartResult.FAILED;
         }
-        // Bonded radio first. Exactly one bonded MeshCore* device: connect to it
-        // directly. Several (for example two radios): scan and pick the one that
-        // is actually advertising, because a bonded radio that is switched off
-        // would otherwise cost a 20 s timeout.
-        try {
-            List<BluetoothDevice> bonded = bondedMeshCore(adapter);
-            if (bonded.size() == 1) {
-                BluetoothDevice device = bonded.get(0);
-                String name = safeName(device);
-                connectTo(device, name.isEmpty() ? "(bonded)" : name, "bonded", nowMs);
+        // E1: a remembered radio is connected by its address. Nothing is picked by name,
+        // by signal strength or by "only one paired MeshCore device" any more.
+        String saved = state == null ? null : state.savedRadioAddress();
+        if (saved != null) {
+            BluetoothDevice remembered = null;
+            boolean paired = false;
+            try {
+                remembered = adapter.getRemoteDevice(saved);
+                paired = remembered.getBondState() == BluetoothDevice.BOND_BONDED;
+            } catch (IllegalArgumentException ex) {
+                machine.note(nowMs, "saved radio address rejected by Android", LinkMachine.NO_STATUS);
+            } catch (SecurityException ex) {
+                machine.note(nowMs, "saved radio not readable", LinkMachine.NO_STATUS);
+            }
+            String savedName = state.savedRadioName();
+            if (savedName.isEmpty() && remembered != null) {
+                savedName = safeName(remembered);
+            }
+            RadioChoice.Plan plan = remembered == null
+                    ? RadioChoice.Plan.SCAN_FOR_SAVED : RadioChoice.plan(saved, paired);
+            if (plan == RadioChoice.Plan.DIRECT_SAVED) {
+                connectTo(remembered, RadioChoice.label(savedName, saved), "saved radio", nowMs);
                 return machine.state() == LinkMachine.State.FAILED ? StartResult.FAILED : StartResult.STARTED;
             }
-            if (bonded.size() > 1) {
-                machine.note(nowMs, "bonded MeshCore devices=" + bonded.size() + ", scanning to choose", LinkMachine.NO_STATUS);
-            }
-        } catch (SecurityException ex) {
-            machine.note(nowMs, "bonded list denied", LinkMachine.NO_STATUS);
+            wantedAddress = saved;
+            targetLabel = RadioChoice.label(savedName, saved);
+            machine.note(nowMs, "saved radio " + RadioChoice.shortAddress(saved) + " is not paired, scanning for it",
+                    LinkMachine.NO_STATUS);
         }
         BluetoothLeScanner found = adapter.getBluetoothLeScanner();
         if (found == null) {
@@ -382,8 +434,6 @@ public final class MeshcoreGattLink {
         }
         scanStarts.add(nowMs);
         seen.clear();
-        bestMatch = null;
-        firstMatchMs = 0L;
         try {
             scanner.startScan(
                     null,
@@ -405,11 +455,12 @@ public final class MeshcoreGattLink {
     public void stop() {
         long now = System.currentTimeMillis();
         session.setWritesEnabled(false);
-        mainHandler.removeCallbacks(earlyConnect);
+        mainHandler.removeCallbacks(step);
+        mainHandler.removeCallbacks(writeFailureCheck);
+        writeFailure.clear();
         stopScan();
         closeGatt();
         session.onDisconnected(now);
-        bestMatch = null;
         machine.reset(now, "stopped");
     }
 
@@ -431,6 +482,10 @@ public final class MeshcoreGattLink {
             pollBond(nowMs);
             st = machine.state();
         }
+        if (writeFailure.expired(nowMs)) {
+            resolveWriteFailureByTimeout(nowMs);
+            st = machine.state();
+        }
         if (machine.checkTimeout(nowMs)) {
             // The machine already recorded the failure; release the radio and scanner.
             cleanupAfterFailure(nowMs);
@@ -449,6 +504,45 @@ public final class MeshcoreGattLink {
             return;
         }
         pumpWrite(nowMs);
+        scheduleStep();
+    }
+
+    // ---- E4: write the next command as soon as the reply arrives ------------
+
+    /** Ask the session when it could write next and post {@link #step} for then. */
+    private void scheduleStep() {
+        long delay = session.nextActionDelayMs(System.currentTimeMillis());
+        mainHandler.removeCallbacks(step);
+        if (delay >= 0L) {
+            mainHandler.postDelayed(step, delay);
+        }
+    }
+
+    private void stepNow(long nowMs) {
+        if (gatt == null) {
+            return;
+        }
+        LinkMachine.State st = machine.state();
+        if (st == LinkMachine.State.HANDSHAKE) {
+            superviseHandshake(nowMs);
+            st = machine.state();
+        }
+        if (st != LinkMachine.State.HANDSHAKE && st != LinkMachine.State.READY) {
+            return;
+        }
+        session.tick(nowMs);
+        pumpWrite(nowMs);
+    }
+
+    // ---- E5: the real reason a link dies -------------------------------------
+
+    private void resolveWriteFailureByTimeout(long nowMs) {
+        WriteFailureTracker.Resolution res = writeFailure.resolveByTimeout(nowMs);
+        if (res == null) {
+            return;
+        }
+        machine.note(nowMs, res.detail(), res.finalStatus);
+        failLink(nowMs, res.reason, res.finalStatus);
     }
 
     private void superviseHandshake(long nowMs) {
@@ -466,6 +560,18 @@ public final class MeshcoreGattLink {
     /** B3: the frame leaves the queue only after Android accepts the write. */
     @SuppressLint("MissingPermission")
     private void pumpWrite(long nowMs) {
+        if (writeFailure.pending()) {
+            return;
+        }
+        if (writeInFlight) {
+            if (nowMs - writeSentMs < WRITE_CALLBACK_WAIT_MS) {
+                return;
+            }
+            // No onCharacteristicWrite in time: do not deadlock, but say so.
+            writeInFlight = false;
+            session.engine().counters().inc("write_callback_missing");
+            machine.note(nowMs, "write callback missing after " + WRITE_CALLBACK_WAIT_MS + " ms", LinkMachine.NO_STATUS);
+        }
         byte[] frame = session.peekWrite();
         BluetoothGatt open = gatt;
         BluetoothGattCharacteristic sink = rx;
@@ -483,6 +589,8 @@ public final class MeshcoreGattLink {
         if (accepted) {
             session.pollWrite();
             session.writeAccepted();
+            writeInFlight = true;
+            writeSentMs = nowMs;
         } else {
             session.writeRefused();
             machine.note(nowMs, "write refused by Android (frame kept for retry)", LinkMachine.NO_STATUS);
@@ -553,29 +661,102 @@ public final class MeshcoreGattLink {
             prior.nameMatch = prior.nameMatch || nameMatch;
             prior.device = device;
         }
-        if (prior.match() && (bestMatch == null || prior.rssi > bestMatch.rssi)) {
-            bestMatch = prior;
-        }
-        if (prior.match() && firstMatchMs == 0L) {
-            // First match: connect after a short wait for a stronger one (R4), not at the end of the window.
-            firstMatchMs = System.currentTimeMillis();
-            mainHandler.postDelayed(earlyConnect, LinkMachine.EARLY_CONNECT_WAIT_MS);
+        if (wantedAddress != null && RadioChoice.sameAddress(wantedAddress, address)) {
+            // A remembered radio that is not paired: this scan accepts only that address.
+            connectTo(device, RadioChoice.label(label.equals("(no-name)") ? "" : label, address),
+                    "saved radio, scan", System.currentTimeMillis());
         }
     }
 
     @SuppressLint("MissingPermission")
     private void finishScanWindow(long nowMs) {
         stopScan();
-        mainHandler.removeCallbacks(earlyConnect);
-        if (bestMatch != null && gatt == null) {
-            connectTo(bestMatch.device, bestMatch.label, "scan end", nowMs);
+        if (gatt != null) {
             return;
         }
         int n = seen.size();
-        String locationNote = n == 0 && appContext != null && "off".equals(locationState(appContext))
-                ? " (Location is off)" : "";
-        failLink(nowMs, "scan_timeout seen=" + n + (n == 0 ? locationNote : " no MeshCore match"),
-                LinkMachine.NO_STATUS);
+        if (wantedAddress != null) {
+            failLink(nowMs, "saved radio " + RadioChoice.shortAddress(wantedAddress)
+                    + " not seen (Forget radio to choose again)", LinkMachine.NO_STATUS);
+            return;
+        }
+        List<RadioChoice.Candidate> matches = candidates();
+        if (matches.isEmpty()) {
+            String locationNote = n == 0 && appContext != null && "off".equals(locationState(appContext))
+                    ? " (Location is off)" : "";
+            failLink(nowMs, "scan_timeout seen=" + n + (n == 0 ? locationNote : " no MeshCore match"),
+                    LinkMachine.NO_STATUS);
+            return;
+        }
+        // E1: nothing is picked automatically, not even a single match.
+        if (!machine.enter(LinkMachine.State.CHOOSE, nowMs, matches.size() + " MeshCore radio(s) found, waiting for the user",
+                LinkMachine.NO_STATUS)) {
+            return;
+        }
+        Listener l = listener;
+        if (l == null) {
+            failLink(nowMs, "no screen to choose a radio", LinkMachine.NO_STATUS);
+            return;
+        }
+        l.onChooseRadio(matches);
+    }
+
+    /** Every MeshCore match from the last scan, strongest first, for the dialog. */
+    @SuppressLint("MissingPermission")
+    private List<RadioChoice.Candidate> candidates() {
+        List<RadioChoice.Candidate> out = new ArrayList<RadioChoice.Candidate>();
+        for (Sighting s : sortedSeen()) {
+            if (s.match()) {
+                out.add(new RadioChoice.Candidate(s.key, s.label, s.rssi, isPaired(s.device)));
+            }
+        }
+        return out;
+    }
+
+    @SuppressLint("MissingPermission")
+    private static boolean isPaired(BluetoothDevice device) {
+        try {
+            return device != null && device.getBondState() == BluetoothDevice.BOND_BONDED;
+        } catch (SecurityException ex) {
+            return false;
+        }
+    }
+
+    /**
+     * E1: the user picked a radio in the dialog. Saves its address and connects to it.
+     * Ignored unless the link is waiting for that choice.
+     */
+    public void chooseRadio(String address) {
+        long now = System.currentTimeMillis();
+        if (machine.state() != LinkMachine.State.CHOOSE) {
+            return;
+        }
+        Sighting picked = null;
+        for (Sighting sighting : seen.values()) {
+            if (RadioChoice.sameAddress(sighting.key, address)) {
+                picked = sighting;
+            }
+        }
+        if (picked == null || !picked.match()) {
+            failLink(now, "chosen radio no longer in the scan list", LinkMachine.NO_STATUS);
+            return;
+        }
+        String name = picked.label.equals("(no-name)") ? "" : picked.label;
+        if (state != null) {
+            state.saveRadio(picked.key, name);
+        }
+        Listener l = listener;
+        if (l != null) {
+            l.onRadioChosen(picked.key, name);
+        }
+        connectTo(picked.device, RadioChoice.label(name, picked.key), "chosen by user", now);
+    }
+
+    /** E1: the dialog was cancelled. */
+    public void cancelChoose() {
+        if (machine.state() == LinkMachine.State.CHOOSE) {
+            failLink(System.currentTimeMillis(), "radio choice cancelled", LinkMachine.NO_STATUS);
+        }
     }
 
     // ---- connect -----------------------------------------------------------
@@ -585,7 +766,6 @@ public final class MeshcoreGattLink {
         if (device == null || gatt != null) {
             return;
         }
-        mainHandler.removeCallbacks(earlyConnect);
         stopScan();
         targetLabel = label;
         sawBonding = false;
@@ -702,7 +882,10 @@ public final class MeshcoreGattLink {
 
     @SuppressLint("MissingPermission")
     private void cleanupAfterFailure(long nowMs) {
-        mainHandler.removeCallbacks(earlyConnect);
+        mainHandler.removeCallbacks(step);
+        mainHandler.removeCallbacks(writeFailureCheck);
+        writeFailure.clear();
+        writeInFlight = false;
         stopScan();
         closeGatt();
         session.onDisconnected(nowMs);
@@ -817,20 +1000,35 @@ public final class MeshcoreGattLink {
             runOnMain(new Runnable() {
                 @Override
                 public void run() {
-                    if (g != gatt || status == BluetoothGatt.GATT_SUCCESS) {
+                    if (g != gatt) {
+                        return;
+                    }
+                    // E4: the previous GATT write is finished; the next one may start.
+                    writeInFlight = false;
+                    if (status == BluetoothGatt.GATT_SUCCESS) {
+                        scheduleStep();
                         return;
                     }
                     long now = System.currentTimeMillis();
                     session.engine().counters().inc("gatt_write_status_" + status);
                     machine.note(now, "write callback", status);
-                    // C2: a failed write ends the attempt with its real status code (for example
-                    // 5, 15 or 137: pairing keys rejected) instead of timing out as "no handshake reply".
+                    // C2/E5: a failed write ends the attempt. v7.1 closed the connection at once,
+                    // so the disconnect status that explains it was never seen. Wait up to 2 s for
+                    // that callback; its status becomes the final one. Record how long the radio
+                    // had been silent.
                     if (LinkRules.writeFailureEndsAttempt(machine.state())) {
-                        failLink(now, "write failed", status);
+                        writeFailure.begin(now, status, session.lastNotificationMs());
+                        mainHandler.postDelayed(writeFailureCheck, WriteFailureTracker.WAIT_MS);
                     }
                 }
             });
         }
+    }
+
+    /** Milliseconds since the radio last sent a frame on this link, or -1 when it has not. */
+    private long sinceLastNotification(long nowMs) {
+        long last = session.lastNotificationMs();
+        return last <= 0L ? -1L : Math.max(0L, nowMs - last);
     }
 
     private static byte[] copyOf(byte[] value) {
@@ -846,7 +1044,14 @@ public final class MeshcoreGattLink {
                 if (g != gatt) {
                     return;
                 }
-                session.onNotification(copy, System.currentTimeMillis());
+                long now = System.currentTimeMillis();
+                session.onNotification(copy, now);
+                // E4: a reply just arrived. Declare READY at once if that finished the
+                // handshake, then write the next command when the 60 ms gap allows.
+                if (machine.state() == LinkMachine.State.HANDSHAKE) {
+                    superviseHandshake(now);
+                }
+                scheduleStep();
             }
         });
     }
@@ -866,6 +1071,20 @@ public final class MeshcoreGattLink {
             return;
         }
         LinkMachine.State st = machine.state();
+        if (writeFailure.pending()
+                && (status != BluetoothGatt.GATT_SUCCESS || newState == BluetoothProfile.STATE_DISCONNECTED)) {
+            // E5: the disconnect that explains the failed write. Its status is the final one.
+            WriteFailureTracker.Resolution res = writeFailure.resolveByDisconnect(now, status);
+            if (res != null) {
+                machine.note(now, res.detail(), res.finalStatus);
+                failLink(now, res.reason, res.finalStatus);
+                return;
+            }
+        }
+        if (status != BluetoothGatt.GATT_SUCCESS || newState == BluetoothProfile.STATE_DISCONNECTED) {
+            machine.note(now, "link ended: " + WriteFailureTracker.notificationText(
+                    sinceLastNotification(now)), status);
+        }
         if (status != BluetoothGatt.GATT_SUCCESS) {
             failLink(now, st == LinkMachine.State.READY ? "radio disconnected" : "gatt error", status);
             return;
@@ -987,6 +1206,8 @@ public final class MeshcoreGattLink {
         }
         session.onNotifications(true);
         machine.enter(LinkMachine.State.HANDSHAKE, now, "notifications on", LinkMachine.NO_STATUS);
+        // E4: start the handshake now, not at the next 1 s tick.
+        scheduleStep();
     }
 
     // ---- scan helpers ------------------------------------------------------
@@ -1120,6 +1341,10 @@ public final class MeshcoreGattLink {
             }
         }
         sb.append(" autoRetry=").append(machine.autoRetry()).append('\n');
+        String saved = state == null ? null : state.savedRadioAddress();
+        sb.append("radio target=").append(targetLabel.isEmpty() ? "(none yet)" : targetLabel)
+                .append(" saved=").append(saved == null ? "none"
+                        : RadioChoice.label(state.savedRadioName(), saved)).append('\n');
         sb.append(permissions(context).detail(Build.VERSION.SDK_INT)).append('\n');
         BluetoothManager manager = (BluetoothManager) context.getSystemService(Context.BLUETOOTH_SERVICE);
         BluetoothAdapter adapter = manager == null ? null : manager.getAdapter();
@@ -1170,8 +1395,10 @@ public final class MeshcoreGattLink {
         int n = Math.min(10, list.size());
         for (int i = 0; i < n; i++) {
             Sighting s = list.get(i);
-            sb.append("  ").append(s.label).append(' ').append(s.rssi).append("dBm uuid=")
-                    .append(s.uuid ? "Y" : "n").append(" name=").append(s.nameMatch ? "Y" : "n").append('\n');
+            sb.append("  ").append(s.label).append(' ').append(RadioChoice.shortAddress(s.key)).append(' ')
+                    .append(s.rssi).append("dBm uuid=")
+                    .append(s.uuid ? "Y" : "n").append(" name=").append(s.nameMatch ? "Y" : "n")
+                    .append(" paired=").append(isPaired(s.device) ? "Y" : "n").append('\n');
         }
         sb.append("stages:\n");
         SimpleDateFormat fmt = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
@@ -1189,8 +1416,47 @@ public final class MeshcoreGattLink {
         for (String line : session.trace()) {
             sb.append("  ").append(line).append('\n');
         }
+        appendEngineDiagnostics(sb);
         sb.append("counters: ").append(session.engine().counters().snapshot()).append('\n');
         return sb.toString();
+    }
+
+    /**
+     * E3, E4, E6: handshake time, the channel table without secrets, per-type frame counts,
+     * the radio's own uptime and battery, and the storage state.
+     */
+    private void appendEngineDiagnostics(StringBuilder sb) {
+        Engine engine = session.engine();
+        long hs = machine.handshakeMs();
+        sb.append("handshake ms=").append(hs < 0L ? "n/a" : Long.toString(hs)).append('\n');
+        List<Engine.ChannelRow> rows = engine.channelRows();
+        Engine.ChannelRow chosen = engine.selectedChannelRow();
+        sb.append("channels: ").append(rows.size()).append(" in use, ").append(engine.emptyChannelSlots())
+                .append(" empty slots, selected=")
+                .append(chosen == null ? "none" : chosen.index + " fp=" + chosen.fingerprint).append('\n');
+        for (Engine.ChannelRow row : rows) {
+            sb.append("  [").append(row.index).append("] ").append(row.name).append(" fp=").append(row.fingerprint)
+                    .append(row.safe ? " ok" : " refused: " + row.reason).append('\n');
+        }
+        sb.append("frames: native_text=").append(engine.counters().get("native_text_rx"))
+                .append(" mctak_data=").append(engine.counters().get("mctak_data_rx"))
+                .append(" no_more_messages=").append(engine.counters().get("no_more_messages")).append('\n');
+        Engine.RadioStats stats = engine.radioStats();
+        if (stats == null) {
+            sb.append("radio stats: none read yet (stats_unavailable=")
+                    .append(engine.counters().get("stats_unavailable")).append(")\n");
+        } else {
+            sb.append("radio stats: uptime=").append(stats.uptimeSecs).append("s battery=").append(stats.batteryMv)
+                    .append("mV errFlags=0x").append(Integer.toHexString(stats.errFlags))
+                    .append(" queue=").append(stats.queueLen)
+                    .append(" read ").append(Math.max(0L, (System.currentTimeMillis() - stats.atMs) / 1000L))
+                    .append("s ago, readings=").append(engine.radioStatsHistory().size())
+                    .append(" rebootSeen=").append(engine.radioRebootSeen()).append('\n');
+        }
+        if (state != null) {
+            sb.append("storage: seqWrites=").append(state.writes()).append(" lastError=")
+                    .append(state.lastError().isEmpty() ? "none" : state.lastError()).append('\n');
+        }
     }
 
     private static String locationState(Context context) {
@@ -1218,10 +1484,6 @@ public final class MeshcoreGattLink {
     }
 
     private static String shortAddress(BluetoothDevice device) {
-        String address = device.getAddress();
-        if (address == null || address.length() < 5) {
-            return "";
-        }
-        return "..." + address.substring(address.length() - 5);
+        return RadioChoice.shortAddress(device.getAddress());
     }
 }

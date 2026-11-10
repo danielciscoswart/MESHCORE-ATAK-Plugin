@@ -1,6 +1,9 @@
 package dev.meshcore.atak.host;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.DialogInterface;
+import android.content.SharedPreferences;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -26,8 +29,13 @@ import java.util.List;
 
 import dev.meshcore.atak.ble.MeshcoreGattLink;
 import dev.meshcore.atak.engine.Engine;
+import dev.meshcore.atak.engine.SendReasons;
 import dev.meshcore.atak.mctak.Mctak;
+import dev.meshcore.atak.plugin.KeyValueStore;
 import dev.meshcore.atak.plugin.PluginHost;
+import dev.meshcore.atak.plugin.PluginState;
+import dev.meshcore.atak.transport.LinkMachine;
+import dev.meshcore.atak.transport.RadioChoice;
 import gov.tak.api.plugin.IPlugin;
 import gov.tak.api.plugin.IServiceController;
 import gov.tak.api.ui.IHostUIService;
@@ -45,7 +53,7 @@ import gov.tak.platform.marshal.MarshalManager;
 public final class MeshCoreAtakPlugin implements IPlugin {
     static final String TAG = "MeshCoreAtak";
     /** Shown at the start of the status line so the installed build is obvious. */
-    static final String BUILD_TAG = "v7.1";
+    static final String BUILD_TAG = "v7.2";
 
     private final IServiceController serviceController;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -63,13 +71,39 @@ public final class MeshCoreAtakPlugin implements IPlugin {
     private View paneRoot;
     private View paneHeader;
     private View paneScroll;
+    private Button optButton;
+    private Button sendButton;
+    private Button forgetButton;
+    private Button chooseChannelButton;
+    private TextView channelsText;
+    private TextView inboxText;
+    private TextView chatHint;
+    private CheckBox watchBox;
+    private CheckBox pluginOnlyBox;
+    private PluginState state;
+    private AlertDialog dialog;
     private boolean running;
     private boolean linkWanted;
-    private boolean locationOptIn;
-    private boolean watchGeoChat;
+    /**
+     * F3: copying ATAK GeoChat onto the radio is switched off in v7.2. It would send chats meant
+     * for TAK-server users to everyone who holds the radio channel. The code stays; the checkbox
+     * is hidden (visibility gone) and this flag keeps the copy from ever turning on.
+     */
+    private static final boolean GEOCHAT_COPY_AVAILABLE = false;
+    private boolean watchGeoChat = false;
     private boolean watchRegistered;
+    /** True while the code (not the user) changes a checkbox, so its listener does nothing. */
+    private boolean syncingViews;
     private String lastChatStatus = "none";
     private String startupError;
+    /** E10: the last refusal or result, shown on the status line for a few seconds. */
+    private String transientNote = "";
+    private long transientUntilMs;
+    private String lastSendNote = "none";
+    private int shownChatResultSeq;
+    private String shownChannels = "";
+    private String shownInbox = "";
+    private static final long TRANSIENT_MS = 8_000L;
 
     private final Runnable tick = new Runnable() {
         @Override
@@ -82,12 +116,16 @@ public final class MeshCoreAtakPlugin implements IPlugin {
                 if (watchGeoChat && !watchRegistered) {
                     setWatchGeoChat(true);
                 }
-                if (host.session().ready() && !host.engine().hasSelectedChannel()) {
-                    host.engine().selectFirstTeamChannel();
-                }
-                if (locationOptIn) {
+                // E2: no channel is ever chosen for the user. The engine keeps position
+                // and GeoChat copying off until one is chosen and confirmed.
+                host.engine().setNowSeconds(now / 1000L);
+                if (host.engine().locationOptIn()) {
                     AtakCotBridge.copySelfPosition(host.engine());
-                    host.engine().beacon(now);
+                    Engine.Send sent = host.engine().beacon(now);
+                    if (!sent.why.isEmpty()) {
+                        // Status line only: a refused beacon repeats every tick, so no toast.
+                        setTransient(sent.why);
+                    }
                 }
                 drainWatchedChat(now);
                 if (radio != null) {
@@ -110,6 +148,8 @@ public final class MeshCoreAtakPlugin implements IPlugin {
                 for (int i = 0; i < events.size(); i++) {
                     AtakCotBridge.publish(events.get(i));
                 }
+                announceIncomingAndResults();
+                syncViews();
                 showStatus();
             } catch (Throwable t) {
                 Log.e(TAG, "tick failed: " + t.getClass().getName());
@@ -146,7 +186,9 @@ public final class MeshCoreAtakPlugin implements IPlugin {
                 PluginHost created = new PluginHost();
                 created.onCreate();
                 host = created;
+                state = new PluginState(new PrefsStore(), host.engine());
                 radio = new MeshcoreGattLink(host.session());
+                radio.setState(state);
                 radio.setListener(new MeshcoreGattLink.Listener() {
                     @Override
                     public void onChanged() {
@@ -156,6 +198,18 @@ public final class MeshCoreAtakPlugin implements IPlugin {
                     @Override
                     public void onOutcome(String text) {
                         toast(text);
+                    }
+
+                    @Override
+                    public void onChooseRadio(List<RadioChoice.Candidate> candidates) {
+                        showRadioDialog(candidates);
+                    }
+
+                    @Override
+                    public void onRadioChosen(String address, String name) {
+                        // E2: a different radio means position and chat start over.
+                        host.engine().clearChannelSelection("radio chosen");
+                        syncViews();
                     }
                 });
                 geoChatWatch = new ExperimentalGeoChatWatch();
@@ -184,6 +238,7 @@ public final class MeshCoreAtakPlugin implements IPlugin {
         running = false;
         linkWanted = false;
         handler.removeCallbacks(tick);
+        dismissDialog();
         try {
             setWatchGeoChat(false);
         } catch (Throwable t) {
@@ -310,13 +365,25 @@ public final class MeshCoreAtakPlugin implements IPlugin {
             Button connect = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_connect);
             Button copyDiag = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_copy_diag);
             connectButton = connect;
-            Button opt = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_opt_in);
+            final Button opt = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_opt_in);
+            optButton = opt;
+            forgetButton = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_forget);
+            chooseChannelButton = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_choose_channel);
+            channelsText = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_channels);
+            inboxText = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_inbox);
+            chatHint = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_chat_hint);
+            pluginOnlyBox = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_plugin_only);
+            shownChannels = "";
+            shownInbox = "";
             Button disconnect = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_disconnect);
             disconnectButton = disconnect;
             final EditText room = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_room);
             final EditText outText = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_out_text);
             Button send = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_send);
+            sendButton = send;
             CheckBox watch = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_watch);
+            watchBox = watch;
+            watch.setVisibility(View.GONE);
             connect.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View view) {
@@ -352,15 +419,32 @@ public final class MeshCoreAtakPlugin implements IPlugin {
             opt.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View view) {
-                    if (host == null) {
+                    togglePosition();
+                }
+            });
+            forgetButton.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View view) {
+                    forgetRadio();
+                }
+            });
+            chooseChannelButton.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View view) {
+                    showChannelDialog();
+                }
+            });
+            pluginOnlyBox.setChecked(true);
+            pluginOnlyBox.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+                @Override
+                public void onCheckedChanged(CompoundButton button, boolean checked) {
+                    if (syncingViews || host == null) {
                         return;
                     }
-                    locationOptIn = !locationOptIn;
-                    host.engine().setLocationOptIn(locationOptIn);
-                    String label = pluginContext.getString(locationOptIn
-                            ? dev.meshcore.atak.plugin.R.string.opt_out
-                            : dev.meshcore.atak.plugin.R.string.opt_in);
-                    opt.setText(label);
+                    host.engine().setPluginOnlyChat(checked);
+                    toast(checked ? "Chat: ATAK plugin users only"
+                            : "Chat: MeshCore channel text, anyone on the channel");
+                    syncViews();
                     showStatus();
                 }
             });
@@ -377,7 +461,22 @@ public final class MeshCoreAtakPlugin implements IPlugin {
             watch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
                 @Override
                 public void onCheckedChanged(CompoundButton button, boolean checked) {
-                    setWatchGeoChat(checked);
+                    if (syncingViews || host == null) {
+                        return;
+                    }
+                    if (checked) {
+                        // Copying GeoChat onto the radio needs a chosen private channel.
+                        String why = sendBlocker();
+                        if (why == null && host.engine().setGeoChatCopy(true)) {
+                            setWatchGeoChat(true);
+                        } else {
+                            refuse(why == null ? SendReasons.NO_CHANNEL : why);
+                        }
+                    } else {
+                        host.engine().setGeoChatCopy(false);
+                        setWatchGeoChat(false);
+                    }
+                    syncViews();
                     showStatus();
                 }
             });
@@ -430,20 +529,26 @@ public final class MeshCoreAtakPlugin implements IPlugin {
             disconnectButton.setEnabled(radio.disconnectEnabled());
         }
         if (statusLine != null) {
-            statusLine.setText(BUILD_TAG + " | " + radio.summary(now));
+            // E10: a recent refusal or send result replaces the link summary for a few seconds.
+            boolean note = now < transientUntilMs && !transientNote.isEmpty();
+            statusLine.setText(BUILD_TAG + " | " + (note ? transientNote : radio.summary(now)));
         }
         if (status == null) {
             return;
         }
         Engine engine = host.engine();
         MeshcoreGattLink.PermissionReport perms = MeshcoreGattLink.permissions(pluginContext);
+        Engine.ChannelRow chosen = engine.selectedChannelRow();
         status.setText("build=" + BUILD_TAG
                 + "\nlink=" + engine.link()
                 + " ready=" + host.session().ready()
-                + " ch=" + engine.hasSelectedChannel()
-                + " loc=" + locationOptIn
+                + " ch=" + (chosen == null ? "none" : chosen.index + " " + chosen.fingerprint)
+                + " loc=" + engine.locationOptIn()
                 + " q=" + engine.queued()
-                + "\nchat=" + lastChatStatus
+                + "\nchat mode: " + engine.chatModeLabel()
+                + "\nlast chat result: " + (engine.lastChatResult().isEmpty() ? "none" : engine.lastChatResult())
+                + "\nlast send note: " + lastSendNote
+                + "\ntransport=" + lastChatStatus
                 + " watch=" + watchGeoChat
                 + "\nperms " + perms.detail(Build.VERSION.SDK_INT)
                 + "\nradio: " + radio.summary(now)
@@ -467,7 +572,14 @@ public final class MeshCoreAtakPlugin implements IPlugin {
 
     /** Short toast on the main thread. Two lines at most (Android 12+ cuts longer text). */
     private void toast(final String text) {
-        Log.i(TAG, "toast: " + text);
+        toast(text, true);
+    }
+
+    /** {@code log} is false for received text: it is shown, never written to the log. */
+    private void toast(final String text, boolean log) {
+        if (log) {
+            Log.i(TAG, "toast: " + text);
+        }
         final String shown = text.length() > 70 ? text.substring(0, 70) : text;
         Runnable show = new Runnable() {
             @Override
@@ -616,68 +728,441 @@ public final class MeshCoreAtakPlugin implements IPlugin {
     }
 
     private void restoreSequence() {
-        if (pluginContext == null || host == null) {
-            return;
-        }
-        java.io.File file = new java.io.File(pluginContext.getFilesDir(), "mctak-seq.txt");
-        if (!file.isFile()) {
-            return;
-        }
-        java.io.BufferedReader reader = null;
-        try {
-            reader = new java.io.BufferedReader(new java.io.FileReader(file));
-            String line = reader.readLine();
-            if (line != null && line.trim().length() > 0 && line.trim().length() <= 8) {
-                host.engine().resumeAfter(Integer.parseInt(line.trim()));
-            }
-        } catch (Exception ex) {
-            host.engine().counters().inc("sequence_restore_failed");
-            Log.e(TAG, "sequence restore failed: " + ex.getClass().getName());
-        } finally {
-            if (reader != null) {
-                try {
-                    reader.close();
-                } catch (java.io.IOException ignored) {
-                    host.engine().counters().inc("sequence_restore_failed");
-                }
-            }
+        if (state != null) {
+            state.restoreSequence();
         }
     }
 
     private void storeSequence() {
-        if (pluginContext == null || host == null) {
-            return;
+        if (state != null) {
+            state.storeSequenceIfChanged();
         }
-        java.io.File file = new java.io.File(pluginContext.getFilesDir(), "mctak-seq.txt");
-        java.io.FileWriter writer = null;
-        try {
-            writer = new java.io.FileWriter(file, false);
-            writer.write(Integer.toString(host.engine().lastIssuedSequence()));
-        } catch (Exception ex) {
-            host.engine().counters().inc("sequence_store_failed");
-            Log.e(TAG, "sequence store failed: " + ex.getClass().getName());
-        } finally {
-            if (writer != null) {
-                try {
-                    writer.close();
-                } catch (java.io.IOException ignored) {
-                    host.engine().counters().inc("sequence_store_failed");
-                }
+    }
+
+    /**
+     * E3: storage obtained from ATAK's own context. The plugin runs in ATAK's process, so
+     * the plugin package's files directory is not writable; ATAK's preferences are.
+     */
+    private final class PrefsStore implements KeyValueStore {
+        private SharedPreferences prefs() throws java.io.IOException {
+            Context ctx = null;
+            try {
+                MapView mapView = MapView.getMapView();
+                ctx = mapView == null ? null : mapView.getContext();
+            } catch (Throwable t) {
+                throw new java.io.IOException("ATAK context lookup failed: " + t.getClass().getSimpleName());
+            }
+            if (ctx == null) {
+                throw new java.io.IOException("no ATAK context");
+            }
+            return ctx.getSharedPreferences("meshcore_atak_plugin", Context.MODE_PRIVATE);
+        }
+
+        @Override
+        public String get(String key) {
+            try {
+                return prefs().getString(key, null);
+            } catch (java.io.IOException ex) {
+                return null;
+            }
+        }
+
+        @Override
+        public void put(String key, String value) throws java.io.IOException {
+            if (!prefs().edit().putString(key, value).commit()) {
+                throw new java.io.IOException("preferences commit returned false");
+            }
+        }
+
+        @Override
+        public void remove(String key) throws java.io.IOException {
+            if (!prefs().edit().remove(key).commit()) {
+                throw new java.io.IOException("preferences commit returned false");
             }
         }
     }
 
-    private void sendPaneChat(String room, String text) {
+    // ---- E10: every refusal is shown ------------------------------------------
+
+    /** A refusal: toast and status line, never silent. */
+    private void refuse(String why) {
+        lastSendNote = why;
+        setTransient(why);
+        toast(why);
+        showStatus();
+    }
+
+    private void setTransient(String text) {
+        transientNote = text;
+        transientUntilMs = System.currentTimeMillis() + TRANSIENT_MS;
+    }
+
+    /** Why nothing may be sent right now, or null when a radio is ready and a channel is chosen. */
+    private String sendBlocker() {
+        if (host == null || !host.session().ready()) {
+            return SendReasons.NOT_READY;
+        }
+        if (!host.engine().hasSelectedChannel()) {
+            return SendReasons.NO_CHANNEL;
+        }
+        return null;
+    }
+
+    // ---- E2: explicit channel and position confirmation -------------------------
+
+    private static String channelKind(Engine.ChannelRow row) {
+        return row.safe ? "Private (encrypted)" : row.reason;
+    }
+
+    private void showChannelDialog() {
+        if (host == null || !host.session().ready()) {
+            refuse(SendReasons.NOT_READY);
+            return;
+        }
+        final List<Engine.ChannelRow> safe = new java.util.ArrayList<Engine.ChannelRow>();
+        for (Engine.ChannelRow row : host.engine().channelRows()) {
+            if (row.safe) {
+                safe.add(row);
+            }
+        }
+        if (safe.isEmpty()) {
+            refuse("No private channel on this radio. Add one in the MeshCore app first.");
+            return;
+        }
+        Activity activity = findHostActivity();
+        if (activity == null) {
+            refuse("Cannot open the channel list: no ATAK screen");
+            return;
+        }
+        String[] items = new String[safe.size()];
+        for (int i = 0; i < items.length; i++) {
+            Engine.ChannelRow row = safe.get(i);
+            items[i] = row.name + "\n" + channelKind(row) + "  fingerprint " + row.fingerprint;
+        }
+        dismissDialog();
+        try {
+            dialog = new AlertDialog.Builder(activity)
+                    .setTitle("Choose a channel")
+                    .setItems(items, new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface d, int which) {
+                            chooseChannel(safe.get(which).index);
+                        }
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        } catch (Throwable t) {
+            Log.e(TAG, "channel dialog failed", t);
+            refuse("Cannot open the channel list");
+        }
+    }
+
+    private void chooseChannel(int index) {
         if (host == null) {
-            lastChatStatus = "not started";
+            return;
+        }
+        Engine.Send result = host.engine().selectChannel(index);
+        if (!"OK".equals(result.status)) {
+            refuse(result.why.isEmpty() ? "Not selected" : result.why);
+        } else {
+            Engine.ChannelRow row = host.engine().selectedChannelRow();
+            String text = "Channel chosen: " + (row == null ? index : row.name + " " + row.fingerprint);
+            lastSendNote = text;
+            setTransient(text);
+            toast(text);
+        }
+        syncViews();
+        showStatus();
+    }
+
+    private void togglePosition() {
+        if (host == null) {
+            return;
+        }
+        Engine engine = host.engine();
+        if (engine.locationOptIn()) {
+            engine.setLocationOptIn(false);
+            syncViews();
             showStatus();
             return;
         }
-        String trimmedRoom = room == null ? "" : room.trim();
+        String why = sendBlocker();
+        if (why != null) {
+            refuse(why);
+            return;
+        }
+        final Engine.ChannelRow row = engine.selectedChannelRow();
+        Activity activity = findHostActivity();
+        if (row == null || activity == null) {
+            refuse(row == null ? SendReasons.NO_CHANNEL : "Cannot ask for confirmation: no ATAK screen");
+            return;
+        }
+        dismissDialog();
+        try {
+            dialog = new AlertDialog.Builder(activity)
+                    .setTitle("Send my position?")
+                    .setMessage("Channel: " + row.name + "\n" + channelKind(row) + ", fingerprint "
+                            + row.fingerprint + "\n\nAnyone who has this channel can see where you are. "
+                            + "Your position goes out about every 5 minutes until you stop it. "
+                            + "Radio transmission has not been field tested.")
+                    .setPositiveButton("Send my position", new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface d, int which) {
+                            if (host != null) {
+                                host.engine().setLocationOptIn(true);
+                                syncViews();
+                                showStatus();
+                            }
+                        }
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        } catch (Throwable t) {
+            Log.e(TAG, "position dialog failed", t);
+            refuse("Cannot ask for confirmation");
+        }
+    }
+
+    // ---- E1: radio dialog and forget ----------------------------------------------
+
+    private void showRadioDialog(final List<RadioChoice.Candidate> candidates) {
+        Activity activity = findHostActivity();
+        if (activity == null || radio == null) {
+            toast("Cannot list radios: no ATAK screen");
+            if (radio != null) {
+                radio.cancelChoose();
+            }
+            return;
+        }
+        String[] items = new String[candidates.size()];
+        for (int i = 0; i < items.length; i++) {
+            items[i] = candidates.get(i).line();
+        }
+        dismissDialog();
+        try {
+            dialog = new AlertDialog.Builder(activity)
+                    .setTitle("Choose your MeshCore radio")
+                    .setItems(items, new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface d, int which) {
+                            radio.chooseRadio(candidates.get(which).address);
+                        }
+                    })
+                    .setNegativeButton("Cancel", new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface d, int which) {
+                            radio.cancelChoose();
+                        }
+                    })
+                    .setOnCancelListener(new DialogInterface.OnCancelListener() {
+                        @Override
+                        public void onCancel(DialogInterface d) {
+                            radio.cancelChoose();
+                        }
+                    })
+                    .show();
+            dialogIsRadioChoice = true;
+        } catch (Throwable t) {
+            Log.e(TAG, "radio dialog failed", t);
+            radio.cancelChoose();
+        }
+    }
+
+    private void dismissDialog() {
+        AlertDialog open = dialog;
+        dialog = null;
+        dialogIsRadioChoice = false;
+        if (open != null) {
+            try {
+                open.dismiss();
+            } catch (Throwable t) {
+                Log.e(TAG, "dialog dismiss failed", t);
+            }
+        }
+    }
+
+    /** Forget the remembered radio: disconnect, clear the channel and turn sending off. */
+    private void forgetRadio() {
+        linkWanted = false;
+        if (radio != null) {
+            radio.stop();
+        }
+        if (host != null) {
+            host.onStop();
+            host.engine().clearChannelSelection("radio forgotten");
+        }
+        if (state != null) {
+            state.forgetRadio();
+        }
+        toast("Radio forgotten. CONNECT will ask which radio again.");
+        syncViews();
+        showStatus();
+    }
+
+    // ---- views follow the engine ------------------------------------------------------
+
+    /**
+     * The engine decides what is on: position, GeoChat copying and the chat mode are turned
+     * off or reset when the radio or channel changes. The widgets are made to match.
+     */
+    private void syncViews() {
+        if (host == null) {
+            return;
+        }
+        Engine engine = host.engine();
+        syncingViews = true;
+        try {
+            if (watchGeoChat && !engine.geoChatCopyOptIn()) {
+                setWatchGeoChat(false);
+            }
+            if (watchBox != null && watchBox.isChecked() != watchGeoChat) {
+                watchBox.setChecked(watchGeoChat);
+            }
+            if (pluginOnlyBox != null && pluginOnlyBox.isChecked() != engine.pluginOnlyChat()) {
+                pluginOnlyBox.setChecked(engine.pluginOnlyChat());
+            }
+        } finally {
+            syncingViews = false;
+        }
+        if (optButton != null && pluginContext != null) {
+            optButton.setText(pluginContext.getString(engine.locationOptIn()
+                    ? dev.meshcore.atak.plugin.R.string.opt_out
+                    : dev.meshcore.atak.plugin.R.string.opt_in));
+        }
+        if (sendButton != null) {
+            sendButton.setText("SEND: " + engine.chatModeLabel());
+        }
+        if (chatHint != null) {
+            chatHint.setText(engine.pluginOnlyChat()
+                    ? "Plugin users only: binary channel data that only other copies of this ATAK plugin can read. "
+                            + "The MeshCore app will NOT show it. \"Sent to radio\" means the radio accepted it, not that anyone received it."
+                    : "MeshCore channel text: the official MeshCore app shows it to anyone on the chosen channel, "
+                            + "with your radio's name in front. Room name is ignored. \"Sent to radio\" means the radio accepted it.");
+        }
+        if (dialog != null && radio != null && radio.machine().state() != LinkMachine.State.CHOOSE
+                && dialogIsRadioChoice) {
+            dismissDialog();
+        }
+        refreshChannelsText(engine);
+        refreshInboxText(engine);
+    }
+
+    private boolean dialogIsRadioChoice;
+
+    private void refreshChannelsText(Engine engine) {
+        if (channelsText == null) {
+            return;
+        }
+        StringBuilder sb = new StringBuilder("Channels (nothing is chosen for you):");
+        List<Engine.ChannelRow> rows = engine.channelRows();
+        Engine.ChannelRow chosen = engine.selectedChannelRow();
+        if (rows.isEmpty() && engine.emptyChannelSlots() == 0) {
+            sb.append("\n  none loaded. CONNECT first.");
+        }
+        for (Engine.ChannelRow row : rows) {
+            sb.append("\n ").append(chosen != null && chosen.index == row.index ? "*" : " ")
+                    .append('[').append(row.index).append("] ").append(row.name);
+            if (row.safe) {
+                sb.append("  Private (encrypted)  fp ").append(row.fingerprint);
+            } else {
+                sb.append("  refused: ").append(row.reason);
+            }
+        }
+        if (engine.emptyChannelSlots() > 0) {
+            sb.append("\n  ").append(engine.emptyChannelSlots()).append(" empty slots");
+        }
+        sb.append("\nChosen: ").append(chosen == null ? "none"
+                : chosen.name + " (" + channelKind(chosen) + ", fp " + chosen.fingerprint + ")");
+        String text = sb.toString();
+        if (!text.equals(shownChannels)) {
+            shownChannels = text;
+            channelsText.setText(text);
+        }
+    }
+
+    private void refreshInboxText(Engine engine) {
+        if (inboxText == null) {
+            return;
+        }
+        List<Engine.NativeMessage> inbox = engine.nativeInbox();
+        StringBuilder sb = new StringBuilder();
+        if (inbox.isEmpty()) {
+            sb.append("MeshCore messages (unverified): none yet.");
+        } else {
+            sb.append("MeshCore messages (unverified), newest first:");
+            for (int i = inbox.size() - 1; i >= 0; i--) {
+                // display() always starts with the label; a message is never shown without it.
+                sb.append('\n').append(inbox.get(i).display());
+            }
+        }
+        String text = sb.toString();
+        if (!text.equals(shownInbox)) {
+            shownInbox = text;
+            inboxText.setText(text);
+        }
+    }
+
+    /** E8 toasts for new native text, and one toast per chat result from the radio. */
+    private void announceIncomingAndResults() {
+        if (host == null) {
+            return;
+        }
+        Engine engine = host.engine();
+        List<Engine.NativeMessage> fresh = engine.takeNewNativeText();
+        int shown = 0;
+        for (Engine.NativeMessage message : fresh) {
+            if (shown >= 3) {
+                break;
+            }
+            String text = message.text.length() > 44 ? message.text.substring(0, 44) : message.text;
+            toast(Engine.NativeMessage.LABEL + ": " + text, false);
+            shown++;
+        }
+        if (fresh.size() > shown) {
+            toast("+" + (fresh.size() - shown) + " more MeshCore messages (unverified)", true);
+        }
+        if (engine.chatResultSeq() != shownChatResultSeq) {
+            shownChatResultSeq = engine.chatResultSeq();
+            String result = engine.lastChatResult();
+            lastSendNote = result;
+            setTransient(result);
+            toast(result);
+        }
+    }
+
+    /**
+     * SEND button. Mode ON (default): MCTAK channel data, readable only by copies of this
+     * plugin. Mode OFF: native MeshCore channel text. Both need a ready radio and a chosen
+     * private channel, both refuse text over the cap, and every refusal is shown (E10).
+     */
+    private void sendPaneChat(String room, String text) {
         String body = text == null ? "" : text.trim();
-        int scope = trimmedRoom.length() == 0 ? Mctak.SCOPE_ALL : Mctak.SCOPE_ROOM;
-        Engine.Send send = host.engine().sendChat(scope, 0, trimmedRoom, body, System.currentTimeMillis());
-        lastChatStatus = send.status;
+        String why = sendBlocker();
+        if (why != null) {
+            refuse(why);
+            return;
+        }
+        if (body.isEmpty()) {
+            refuse(SendReasons.EMPTY_TEXT);
+            return;
+        }
+        Engine engine = host.engine();
+        String trimmedRoom = room == null ? "" : room.trim();
+        long now = System.currentTimeMillis();
+        Engine.Send send;
+        if (engine.pluginOnlyChat()) {
+            int scope = trimmedRoom.length() == 0 ? Mctak.SCOPE_ALL : Mctak.SCOPE_ROOM;
+            send = engine.sendChat(scope, 0, trimmedRoom, body, now);
+        } else {
+            send = engine.sendNativeChannelText(body, now);
+        }
+        if (!"QUEUED".equals(send.status)) {
+            refuse(send.why.isEmpty() ? "Not sent: " + send.status : send.why);
+            return;
+        }
+        String queued = "Queued for the radio (" + engine.chatModeLabel() + ")";
+        lastSendNote = queued;
+        setTransient(queued);
         showStatus();
     }
 
@@ -691,10 +1176,16 @@ public final class MeshCoreAtakPlugin implements IPlugin {
                 return;
             }
             lastChatStatus = host.offerOutboundCot(xml, nowMs);
+            if (!"QUEUED".equals(lastChatStatus) && !host.lastWhy().isEmpty()) {
+                refuse(host.lastWhy());
+            }
         }
     }
 
     private void setWatchGeoChat(boolean enabled) {
+        if (enabled && !GEOCHAT_COPY_AVAILABLE) {
+            enabled = false;
+        }
         watchGeoChat = enabled;
         if (geoChatWatch == null) {
             return;
