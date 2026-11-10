@@ -14,6 +14,9 @@ jobs:
           distribution: temurin
           java-version: "21"
       - name: Core, session, and plugin-host tests
+        # shell: bash makes GitHub run "bash -eo pipefail", so a failing
+        # ./scripts/test.sh fails the step even though its output goes through tee.
+        shell: bash
         run: |
           mkdir -p build
           ./scripts/test.sh | tee build/test-out.txt
@@ -23,8 +26,13 @@ jobs:
         # optional tests are added, so it is not pinned here. Instead:
         #   1. the summary must say FAILED 0,
         #   2. every skip counted in the summary must also be printed as a
-        #      "skipped ..." line (a skip cannot be hidden), and
-        #   3. no optional check may report "ok optional" (it must not run here).
+        #      "skipped ..." line (a skip cannot be hidden),
+        #   3. the four known optional checks must each print their named
+        #      "skipped" line (one of them cannot quietly start running and
+        #      printing "ok" while the counts still match), and
+        #   4. no optional check may report "ok optional".
+        # New optional tests may add more skipped lines without breaking this.
+        shell: bash
         run: |
           summary="$(grep -E '^PASSED [0-9]+ FAILED [0-9]+ SKIPPED [0-9]+$' build/test-out.txt | tail -n 1)"
           echo "summary: $summary"
@@ -34,6 +42,19 @@ jobs:
           printed="$(grep -c '^skipped ' build/test-out.txt || true)"
           echo "SKIPPED counted=$counted printed=$printed"
           test "$counted" = "$printed"
-          ! grep -q "ok optional" build/test-out.txt
+          for name in \
+            "skipped optional mctak fixtures" \
+            "skipped optional official meshcore tree" \
+            "skipped optional push codes vs official firmware" \
+            "skipped K1 drain opcodes vs official firmware"; do
+            if ! grep -q "^$name" build/test-out.txt; then
+              echo "missing expected line: $name"
+              exit 1
+            fi
+          done
+          if grep -q "ok optional" build/test-out.txt; then
+            echo "an optional check ran in CI"
+            exit 1
+          fi
       - name: Compile the BLE client against the public Android SDK
         run: ./scripts/compile-ble.sh
