@@ -47,6 +47,9 @@ public final class RadioSession {
     private long reconnectNotBefore;
     private byte[] inflight;
     private byte[] retryHold;
+    private String handshakeFailedCommand = "";
+    private boolean handshakeMtuBlocked;
+    private int consecutiveWriteRefusals;
 
     public RadioSession(Engine engine) {
         this.engine = engine;
@@ -76,6 +79,32 @@ public final class RadioSession {
         this.writesEnabled = enabled;
     }
 
+    public synchronized boolean writesEnabled() {
+        return writesEnabled;
+    }
+
+    /** True once a handshake command was given up on (after its one retry). */
+    public synchronized boolean handshakeFailed() {
+        return handshakeFailed;
+    }
+
+    /** Name of the handshake command that got no reply, or "" when none failed. */
+    public synchronized String handshakeFailedCommand() {
+        return handshakeFailedCommand;
+    }
+
+    /**
+     * True when a handshake command could not be written because the negotiated
+     * ATT MTU is too small for it. This used to be a hidden counter only.
+     */
+    public synchronized boolean handshakeMtuBlocked() {
+        return handshakeMtuBlocked;
+    }
+
+    public synchronized int consecutiveWriteRefusals() {
+        return consecutiveWriteRefusals;
+    }
+
     public synchronized void onConnected(long nowMs) {
         if (connected) {
             return;
@@ -83,6 +112,9 @@ public final class RadioSession {
         connected = true;
         phase = Phase.NEED_APP;
         handshakeFailed = false;
+        handshakeFailedCommand = "";
+        handshakeMtuBlocked = false;
+        consecutiveWriteRefusals = 0;
         handshakeRetries = 0;
         tableFullRetries = 0;
         channelCursor = 0;
@@ -240,6 +272,10 @@ public final class RadioSession {
             }
             engine.counters().inc("not_written_" + decision);
             note("not_written " + decision);
+            if ("mtu".equals(decision) && (cmdByte == Companion.CMD_APP_START
+                    || cmdByte == Companion.CMD_DEVICE_QUERY)) {
+                handshakeMtuBlocked = true;
+            }
             return;
         }
         byte[] copy = Arrays.copyOf(cmd, cmd.length);
@@ -252,6 +288,40 @@ public final class RadioSession {
 
     public synchronized byte[] pollWrite() {
         return outbox.pollFirst();
+    }
+
+    /**
+     * The next frame to hand to the radio, left in the queue. The BLE adapter
+     * calls {@link #pollWrite()} only after Android accepted the write, or
+     * {@link #writeRefused()} when it did not. A refused write used to lose the
+     * frame (B3).
+     */
+    public synchronized byte[] peekWrite() {
+        return outbox.peekFirst();
+    }
+
+    /**
+     * Android refused the write. The head frame goes back to be tried again on a
+     * later tick instead of being lost; its in-flight timer is cleared.
+     */
+    public synchronized void writeRefused() {
+        byte[] head = outbox.pollFirst();
+        consecutiveWriteRefusals++;
+        engine.counters().inc("write_refused");
+        note("write_refused " + consecutiveWriteRefusals);
+        if (head != null) {
+            if (inflight == head) {
+                inflight = null;
+            }
+            if (retryHold == null) {
+                retryHold = head;
+            }
+        }
+    }
+
+    /** Android accepted the write. */
+    public synchronized void writeAccepted() {
+        consecutiveWriteRefusals = 0;
     }
 
     public synchronized int queuedWrites() {
@@ -357,7 +427,26 @@ public final class RadioSession {
             return;
         }
         handshakeFailed = true;
+        handshakeFailedCommand = commandName(cmd);
         note("handshake_stopped");
+        note("handshake_no_reply " + handshakeFailedCommand);
+    }
+
+    private static String commandName(byte[] cmd) {
+        if (cmd == null || cmd.length == 0) {
+            return "unknown";
+        }
+        int c = cmd[0] & 0xFF;
+        if (c == Companion.CMD_APP_START) {
+            return "APP_START";
+        }
+        if (c == Companion.CMD_DEVICE_QUERY) {
+            return "DEVICE_QUERY";
+        }
+        if (c == Companion.CMD_GET_CHANNEL) {
+            return "GET_CHANNEL";
+        }
+        return "cmd" + c;
     }
 
     private static boolean matches(int cmd, int response) {

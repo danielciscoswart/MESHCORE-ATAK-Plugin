@@ -1,6 +1,7 @@
 package dev.meshcore.atak.ble;
 
 import android.annotation.SuppressLint;
+import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothGatt;
 import android.bluetooth.BluetoothGattCallback;
@@ -16,19 +17,28 @@ import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.location.LocationManager;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.ParcelUuid;
+import android.provider.Settings;
+import android.util.Log;
 
+import dev.meshcore.atak.transport.LinkMachine;
 import dev.meshcore.atak.transport.RadioLimits;
 import dev.meshcore.atak.transport.RadioSession;
 
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -41,13 +51,19 @@ import java.util.UUID;
  * companion document says the same. Frames are not split. The PIN is not
  * read from device-info and is not logged. Characteristic values are not logged.
  *
- * <p>Scan is unfiltered. A result matches when the ScanRecord carries the
- * Nordic UART service UUID, or when the advertised / device name starts with
- * {@code MeshCore} (case-insensitive). Official ESP32 companion names are
- * {@code MeshCore-} plus the node name (for example {@code MeshCore-CiscoKid}).
- * nRF52 puts the name in the scan response only. During the 15s window the
- * status lists how many BLE devices were seen and up to five names with RSSI
- * so a plain custom name is still visible even when it did not match.
+ * <p>v7 connect path (one explicit state machine, see {@link LinkMachine}):
+ * IDLE, SCAN, CONNECTING, PAIRING, DISCOVER, MTU, NOTIFY, HANDSHAKE, READY or
+ * FAILED(reason, status). A bonded {@code MeshCore*} device is tried first and
+ * connected directly. Otherwise an unfiltered scan runs, and the link connects
+ * on the first match after waiting at most 2 s for a stronger one. If the
+ * device is not bonded the link connects first and calls createBond() after the
+ * connection is up, then waits for BOND_BONDED (up to 60 s) before discovering
+ * services. Stage time limits: connect 20 s, discover 10 s, MTU 5 s,
+ * notifications 5 s. Every failure records its stage and the GATT status.
+ *
+ * <p>Threading: every GATT and scan callback is run on the Android main
+ * thread (the handler overload of connectGatt on API 26+, an explicit post on
+ * older releases). The host tick runs there too, so link fields need no locks.
  *
  * <p>This class is the BLE adapter. It is not an ATAK plugin and it does not
  * start a foreground service. A stopped host must call {@link #stop()} so a
@@ -55,7 +71,20 @@ import java.util.UUID;
  * No handset was attached when this file was written.
  */
 @SuppressWarnings("deprecation") // setValue/getValue remain the pre-API-33 callbacks older stacks still invoke
-public final class MeshcoreGattLink extends BluetoothGattCallback {
+public final class MeshcoreGattLink {
+    public static final String TAG = "MeshCoreAtak";
+
+    public enum StartResult { STARTED, BUSY, ALREADY_READY, FAILED }
+
+    /** Receives UI-relevant events. Always called on the main thread. */
+    public interface Listener {
+        /** Something changed: refresh buttons and the status line. */
+        void onChanged();
+
+        /** A final outcome worth a toast: Ready, Failed: reason, or Lost. */
+        void onOutcome(String text);
+    }
+
     public static final class PermissionReport {
         public final boolean connect;
         public final boolean scan;
@@ -87,22 +116,34 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
         final String key;
         String label;
         int rssi;
-        boolean match;
+        boolean uuid;
+        boolean nameMatch;
         BluetoothDevice device;
 
-        Sighting(String key, String label, int rssi, boolean match, BluetoothDevice device) {
+        Sighting(String key, String label, int rssi, boolean uuid, boolean nameMatch, BluetoothDevice device) {
             this.key = key;
             this.label = label;
             this.rssi = rssi;
-            this.match = match;
+            this.uuid = uuid;
+            this.nameMatch = nameMatch;
             this.device = device;
+        }
+
+        boolean match() {
+            return uuid || nameMatch;
         }
     }
 
-    private final RadioSession session;
-    private static final long SCAN_TIMEOUT_MS = 15_000L;
+    private static final int SEEN_CAP = 200;
+    private static final int WRITE_REFUSAL_LIMIT = 5;
     private static final UUID SERVICE = UUID.fromString(RadioLimits.SERVICE_UUID);
     private static final ParcelUuid SERVICE_PARCEL = new ParcelUuid(SERVICE);
+
+    private final RadioSession session;
+    private final LinkMachine machine = new LinkMachine();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Callback gattCallback = new Callback();
+    private Listener listener;
 
     private final ScanCallback scans = new ScanCallback() {
         @Override
@@ -122,9 +163,20 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
 
         @Override
         public void onScanFailed(int errorCode) {
-            scanning = false;
-            scanDeadlineMs = 0L;
-            block = "scan_failed_" + errorCode;
+            if (machine.state() == LinkMachine.State.SCAN) {
+                failLink(System.currentTimeMillis(), "scan_failed", errorCode);
+            }
+        }
+    };
+
+    /** Connect early once the stronger-match wait has passed. */
+    private final Runnable earlyConnect = new Runnable() {
+        @Override
+        public void run() {
+            long now = System.currentTimeMillis();
+            if (machine.state() == LinkMachine.State.SCAN && scanning && bestMatch != null && gatt == null) {
+                connectTo(bestMatch.device, bestMatch.label, "early", now);
+            }
         }
     };
 
@@ -134,20 +186,97 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
     private BluetoothGattCharacteristic rx;
     private BluetoothGattCharacteristic tx;
     private boolean scanning;
-    private long scanDeadlineMs;
-    private long scanRestartNotBeforeMs;
-    private String block = "idle";
-    /** Address -> best sighting during the current scan window. */
+    private boolean sawBonding;
+    private long firstMatchMs;
+    private String targetLabel = "";
+    /** Address -> best sighting of the current or most recent scan. */
     private final Map<String, Sighting> seen = new LinkedHashMap<String, Sighting>();
     private Sighting bestMatch;
 
     public MeshcoreGattLink(RadioSession session) {
         this.session = session;
+        machine.setListener(new LinkMachine.Listener() {
+            @Override
+            public void onTransition(LinkMachine.Entry entry) {
+                Log.i(TAG, "link " + entry.state + " " + entry.detail
+                        + (entry.status == LinkMachine.NO_STATUS ? "" : " status=" + entry.status));
+                Listener l = listener;
+                if (l == null) {
+                    return;
+                }
+                if (entry.state == LinkMachine.State.READY) {
+                    l.onOutcome("Ready");
+                } else if (entry.state == LinkMachine.State.FAILED) {
+                    l.onOutcome(outcomeText());
+                }
+                l.onChanged();
+            }
+        });
     }
 
-    public String block() {
-        return block;
+    public void setListener(Listener listener) {
+        this.listener = listener;
     }
+
+    public LinkMachine machine() {
+        return machine;
+    }
+
+    private String outcomeText() {
+        String text = machine.failureText();
+        String out = machine.failStage() == LinkMachine.State.READY
+                ? "Lost: " + text
+                : "Failed: " + text + " [" + machine.failStage().name().toLowerCase(Locale.US) + "]";
+        return out.length() > 70 ? out.substring(0, 70) : out;
+    }
+
+    // ---- text for the pane -------------------------------------------------
+
+    /** Compatibility: the one-line summary of the current link state. */
+    public String block() {
+        return summary(System.currentTimeMillis());
+    }
+
+    /** Label for the CONNECT button. */
+    public String buttonLabel(long nowMs) {
+        return machine.buttonLabel(nowMs);
+    }
+
+    /** Whether DISCONNECT should be enabled: something is running, up, or about to auto-retry. */
+    public boolean disconnectEnabled() {
+        LinkMachine.State s = machine.state();
+        return (s != LinkMachine.State.IDLE && s != LinkMachine.State.FAILED) || machine.autoRetry();
+    }
+
+    /** Short single-line description of the current state. */
+    public String summary(long nowMs) {
+        switch (machine.state()) {
+            case IDLE:
+                return "idle";
+            case SCAN:
+                return "scanning " + machine.secondsLeft(nowMs, LinkMachine.SCAN_WINDOW_MS)
+                        + "s " + summarizeSeen(3);
+            case CONNECTING:
+                return "connecting " + targetLabel;
+            case PAIRING:
+                return "pairing " + targetLabel + ", enter the PIN on the phone if asked";
+            case DISCOVER:
+                return "finding radio services";
+            case MTU:
+                return "negotiating MTU";
+            case NOTIFY:
+                return "enabling notifications";
+            case HANDSHAKE:
+                return "handshake with " + targetLabel;
+            case READY:
+                return "ready " + targetLabel + " mtu=" + session.mtu();
+            default:
+                return "Failed: " + machine.failureText() + " [" + machine.failStage().name().toLowerCase(Locale.US)
+                        + "]" + (machine.failStage() == LinkMachine.State.SCAN ? " " + summarizeSeen(3) : "");
+        }
+    }
+
+    // ---- permissions -------------------------------------------------------
 
     public static PermissionReport permissions(Context context) {
         if (Build.VERSION.SDK_INT >= 31) {
@@ -162,125 +291,199 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
                 granted(context, "android.permission.ACCESS_FINE_LOCATION"));
     }
 
+    // ---- start / stop ------------------------------------------------------
+
+    /** True when the 1 s host tick may start a new attempt (only after a READY link was lost). */
+    public boolean autoReconnectDue(boolean linkWanted) {
+        return machine.autoStartDue(linkWanted, session.reconnectDue(System.currentTimeMillis()));
+    }
+
     /**
-     * Start an unfiltered low-latency scan. Returns false when permission,
-     * radio, or scanner state does not allow it. This does not transmit a
-     * MeshCore frame.
+     * Begin an attempt. Does nothing to a link that is already in progress or
+     * ready (B1): only IDLE or FAILED may start. Re-enables session writes (B2).
+     * Does not transmit a MeshCore frame.
      */
     @SuppressLint("MissingPermission")
-    public boolean start(Context context, long nowMs) {
+    public StartResult start(Context context, long nowMs) {
+        if (!machine.canStart()) {
+            return machine.isReady() ? StartResult.ALREADY_READY : StartResult.BUSY;
+        }
+        session.setWritesEnabled(true);
+        this.appContext = context.getApplicationContext() != null ? context.getApplicationContext() : context;
+        mainHandler.removeCallbacks(earlyConnect);
+        if (!machine.enter(LinkMachine.State.SCAN, nowMs, "start", LinkMachine.NO_STATUS)) {
+            return StartResult.BUSY;
+        }
         PermissionReport report = permissions(context);
         if (!report.canLink(Build.VERSION.SDK_INT)) {
-            block = "permission " + report.detail(Build.VERSION.SDK_INT)
-                    + " (grant Nearby devices to ATAK in Settings)";
-            return false;
+            failLink(nowMs, "no permission: " + report.detail(Build.VERSION.SDK_INT)
+                    + " (allow Nearby devices for ATAK)", LinkMachine.NO_STATUS);
+            return StartResult.FAILED;
         }
         BluetoothManager manager = (BluetoothManager) context.getSystemService(Context.BLUETOOTH_SERVICE);
-        if (manager == null || manager.getAdapter() == null || !manager.getAdapter().isEnabled()) {
-            block = "adapter_off";
-            return false;
+        BluetoothAdapter adapter = manager == null ? null : manager.getAdapter();
+        if (adapter == null || !adapter.isEnabled()) {
+            failLink(nowMs, "bluetooth is off", LinkMachine.NO_STATUS);
+            return StartResult.FAILED;
         }
-        BluetoothLeScanner found = manager.getAdapter().getBluetoothLeScanner();
-        if (found == null) {
-            block = "scanner";
-            return false;
-        }
-        // Already searching: keep the deadline. A second CONNECT tap used to
-        // hit ALREADY_STARTED and look like a no-op; status already says scanning.
-        if (scanning) {
-            return true;
-        }
-        if (nowMs < scanRestartNotBeforeMs) {
-            return false;
-        }
-        // Drop a stale GATT left after disconnect so auto-reconnect can scan.
-        if (gatt != null) {
-            BluetoothGatt stale = gatt;
-            gatt = null;
-            rx = null;
-            tx = null;
-            try {
-                stale.disconnect();
-                stale.close();
-            } catch (SecurityException ex) {
-                block = "security";
-                return false;
+        // Bonded radio first. Exactly one bonded MeshCore* device: connect to it
+        // directly. Several (for example two radios): scan and pick the one that
+        // is actually advertising, because a bonded radio that is switched off
+        // would otherwise cost a 20 s timeout.
+        try {
+            List<BluetoothDevice> bonded = bondedMeshCore(adapter);
+            if (bonded.size() == 1) {
+                BluetoothDevice device = bonded.get(0);
+                String name = safeName(device);
+                connectTo(device, name.isEmpty() ? "(bonded)" : name, "bonded", nowMs);
+                return machine.state() == LinkMachine.State.FAILED ? StartResult.FAILED : StartResult.STARTED;
             }
+            if (bonded.size() > 1) {
+                machine.note(nowMs, "bonded MeshCore devices=" + bonded.size() + ", scanning to choose", LinkMachine.NO_STATUS);
+            }
+        } catch (SecurityException ex) {
+            machine.note(nowMs, "bonded list denied", LinkMachine.NO_STATUS);
         }
-        this.appContext = context.getApplicationContext();
+        BluetoothLeScanner found = adapter.getBluetoothLeScanner();
+        if (found == null) {
+            failLink(nowMs, "no BLE scanner", LinkMachine.NO_STATUS);
+            return StartResult.FAILED;
+        }
         this.scanner = found;
         seen.clear();
         bestMatch = null;
-        // Unfiltered: ESP32 puts the Nordic UART UUID in the advert; nRF52 puts
-        // the name in the scan response only. Name fallback catches MeshCore-*.
+        firstMatchMs = 0L;
         try {
             scanner.startScan(
                     null,
                     new ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(),
                     scans);
         } catch (SecurityException ex) {
-            block = "security";
-            return false;
+            failLink(nowMs, "scan not allowed", LinkMachine.NO_STATUS);
+            return StartResult.FAILED;
         } catch (IllegalArgumentException ex) {
-            block = "scan_bad_args";
-            return false;
+            failLink(nowMs, "scan_bad_args", LinkMachine.NO_STATUS);
+            return StartResult.FAILED;
         }
         scanning = true;
-        scanDeadlineMs = nowMs + SCAN_TIMEOUT_MS;
-        scanRestartNotBeforeMs = 0L;
-        block = "scanning unfiltered (uuid or MeshCore* name); seen=0";
-        return true;
+        return StartResult.STARTED;
     }
 
+    /** User DISCONNECT or host stop. Always ends in IDLE with every callback ignored afterwards. */
     @SuppressLint("MissingPermission")
     public void stop() {
+        long now = System.currentTimeMillis();
         session.setWritesEnabled(false);
+        mainHandler.removeCallbacks(earlyConnect);
         stopScan();
-        seen.clear();
+        closeGatt();
+        session.onDisconnected(now);
         bestMatch = null;
-        BluetoothGatt open = gatt;
-        gatt = null;
-        rx = null;
-        tx = null;
-        if (open != null) {
-            try {
-                open.disconnect();
-                open.close();
-            } catch (SecurityException ex) {
-                block = "security";
-            }
-        }
-        block = "stopped";
+        machine.reset(now, "stopped");
     }
 
-    /** Let the session advance, then hand at most one frame to the RX characteristic. */
+    // ---- 1 s host tick -----------------------------------------------------
+
+    /**
+     * Stage timers, bond polling, handshake supervision, then at most one frame
+     * to the RX characteristic. Called from the host's 1 s main-thread tick.
+     */
     @SuppressLint("MissingPermission")
     public void flush(long nowMs) {
-        if (scanning && scanDeadlineMs > 0L && nowMs >= scanDeadlineMs) {
+        LinkMachine.State st = machine.state();
+        if (st == LinkMachine.State.SCAN && scanning
+                && nowMs - machine.stageStartMs() >= LinkMachine.SCAN_WINDOW_MS) {
             finishScanWindow(nowMs);
+            st = machine.state();
+        }
+        if (st == LinkMachine.State.PAIRING) {
+            pollBond(nowMs);
+            st = machine.state();
+        }
+        if (machine.checkTimeout(nowMs)) {
+            // The machine already recorded the failure; release the radio and scanner.
+            cleanupAfterFailure(nowMs);
+            st = machine.state();
+        }
+        if (st == LinkMachine.State.HANDSHAKE) {
+            superviseHandshake(nowMs);
+            st = machine.state();
         }
         session.tick(nowMs);
-        byte[] frame = session.pollWrite();
+        if (st != LinkMachine.State.HANDSHAKE && st != LinkMachine.State.READY) {
+            return;
+        }
+        pumpWrite(nowMs);
+    }
+
+    private void superviseHandshake(long nowMs) {
+        if (session.ready()) {
+            machine.enter(LinkMachine.State.READY, nowMs, "session ready mtu=" + session.mtu(), LinkMachine.NO_STATUS);
+        } else if (session.handshakeMtuBlocked()) {
+            failLink(nowMs, "MTU too small (" + session.mtu() + ")", LinkMachine.NO_STATUS);
+        } else if (session.handshakeFailed()) {
+            failLink(nowMs, "no handshake reply (" + session.handshakeFailedCommand() + ")", LinkMachine.NO_STATUS);
+        } else if (session.consecutiveWriteRefusals() >= WRITE_REFUSAL_LIMIT) {
+            failLink(nowMs, "Android refused the write " + WRITE_REFUSAL_LIMIT + " times", LinkMachine.NO_STATUS);
+        }
+    }
+
+    /** B3: the frame leaves the queue only after Android accepts the write. */
+    @SuppressLint("MissingPermission")
+    private void pumpWrite(long nowMs) {
+        byte[] frame = session.peekWrite();
         BluetoothGatt open = gatt;
         BluetoothGattCharacteristic sink = rx;
         if (frame == null || open == null || sink == null) {
             return;
         }
-        sink.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
-        sink.setValue(frame);
+        boolean accepted = false;
         try {
-            boolean started = open.writeCharacteristic(sink);
-            if (!started) {
-                block = "write_rejected";
-            }
+            sink.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            sink.setValue(frame);
+            accepted = open.writeCharacteristic(sink);
         } catch (SecurityException ex) {
-            block = "security";
+            machine.note(nowMs, "write denied", LinkMachine.NO_STATUS);
+        }
+        if (accepted) {
+            session.pollWrite();
+            session.writeAccepted();
+        } else {
+            session.writeRefused();
+            machine.note(nowMs, "write refused by Android (frame kept for retry)", LinkMachine.NO_STATUS);
         }
     }
 
     @SuppressLint("MissingPermission")
+    private void pollBond(long nowMs) {
+        BluetoothGatt open = gatt;
+        if (open == null) {
+            return;
+        }
+        int bond;
+        try {
+            bond = open.getDevice().getBondState();
+        } catch (SecurityException ex) {
+            failLink(nowMs, "bond state not readable", LinkMachine.NO_STATUS);
+            return;
+        }
+        if (bond == BluetoothDevice.BOND_BONDED) {
+            machine.note(nowMs, "bonded", LinkMachine.NO_STATUS);
+            enterDiscover(open, nowMs);
+        } else if (bond == BluetoothDevice.BOND_BONDING) {
+            sawBonding = true;
+        } else if (sawBonding) {
+            // Went from BONDING back to NONE: pairing was refused or the PIN was wrong.
+            failLink(nowMs, "pairing failed (bond not created)", LinkMachine.NO_STATUS);
+        }
+    }
+
+    // ---- scan --------------------------------------------------------------
+
+    @SuppressLint("MissingPermission")
     private void onSeen(ScanResult result) {
-        if (result == null || result.getDevice() == null || gatt != null || !scanning) {
+        if (result == null || result.getDevice() == null || gatt != null || !scanning
+                || machine.state() != LinkMachine.State.SCAN) {
             return;
         }
         BluetoothDevice device = result.getDevice();
@@ -289,12 +492,16 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
             return;
         }
         String name = resolveName(result, device);
-        boolean match = hasServiceUuid(result.getScanRecord()) || isMeshCoreName(name);
+        boolean uuid = hasServiceUuid(result.getScanRecord());
+        boolean nameMatch = isMeshCoreName(name);
         int rssi = result.getRssi();
         String label = (name == null || name.isEmpty()) ? "(no-name)" : name;
         Sighting prior = seen.get(address);
         if (prior == null) {
-            prior = new Sighting(address, label, rssi, match, device);
+            if (seen.size() >= SEEN_CAP) {
+                return;
+            }
+            prior = new Sighting(address, label, rssi, uuid, nameMatch, device);
             seen.put(address, prior);
         } else {
             if (rssi > prior.rssi) {
@@ -303,76 +510,405 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
             if (name != null && !name.isEmpty()) {
                 prior.label = name;
             }
-            prior.match = prior.match || match;
+            prior.uuid = prior.uuid || uuid;
+            prior.nameMatch = prior.nameMatch || nameMatch;
             prior.device = device;
         }
-        if (match && (bestMatch == null || rssi > bestMatch.rssi)) {
+        if (prior.match() && (bestMatch == null || prior.rssi > bestMatch.rssi)) {
             bestMatch = prior;
         }
-        // Keep scanning the full window so status can list nearby names
-        // (including a plain custom node name like CiscoKid) before we connect
-        // to the strongest MeshCore match at timeout.
-        block = "scanning unfiltered; " + summarizeSeen();
+        if (prior.match() && firstMatchMs == 0L) {
+            // First match: connect after a short wait for a stronger one (R4), not at the end of the window.
+            firstMatchMs = System.currentTimeMillis();
+            mainHandler.postDelayed(earlyConnect, LinkMachine.EARLY_CONNECT_WAIT_MS);
+        }
     }
 
     @SuppressLint("MissingPermission")
     private void finishScanWindow(long nowMs) {
         stopScan();
-        // Back off so the 1s host tick does not restart scan immediately.
-        scanRestartNotBeforeMs = nowMs + 5_000L;
+        mainHandler.removeCallbacks(earlyConnect);
         if (bestMatch != null && gatt == null) {
-            connectBest(bestMatch);
+            connectTo(bestMatch.device, bestMatch.label, "scan end", nowMs);
             return;
         }
-        if (seen.isEmpty()) {
-            block = "scan_timeout seen=0 (no BLE adverts; turn Location ON on some phones, "
-                    + "close MeshCore app, confirm Companion BLE firmware, radio powered)";
+        int n = seen.size();
+        failLink(nowMs, "scan_timeout seen=" + n + (n == 0 ? "" : " no MeshCore match"), LinkMachine.NO_STATUS);
+    }
+
+    // ---- connect -----------------------------------------------------------
+
+    @SuppressLint("MissingPermission")
+    private void connectTo(BluetoothDevice device, String label, String why, long nowMs) {
+        if (device == null || gatt != null) {
             return;
         }
-        block = "scan_timeout no MeshCore match; " + summarizeSeen()
-                + " (close MeshCore app; look for MeshCore-<node> or your node name)";
+        mainHandler.removeCallbacks(earlyConnect);
+        stopScan();
+        targetLabel = label;
+        sawBonding = false;
+        if (!machine.enter(LinkMachine.State.CONNECTING, nowMs, "connect " + label + " (" + why + ")",
+                LinkMachine.NO_STATUS)) {
+            return;
+        }
+        try {
+            BluetoothGatt created;
+            if (Build.VERSION.SDK_INT >= 26) {
+                created = device.connectGatt(appContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE,
+                        BluetoothDevice.PHY_LE_1M_MASK, mainHandler);
+            } else {
+                created = device.connectGatt(appContext, false, gattCallback, BluetoothDevice.TRANSPORT_LE);
+            }
+            if (created == null) {
+                failLink(nowMs, "connectGatt returned null", LinkMachine.NO_STATUS);
+                return;
+            }
+            gatt = created;
+        } catch (SecurityException ex) {
+            failLink(nowMs, "connect not allowed", LinkMachine.NO_STATUS);
+        }
     }
 
     @SuppressLint("MissingPermission")
-    private void connectBest(Sighting pick) {
-        if (pick == null || pick.device == null || gatt != null) {
+    private void enterDiscover(BluetoothGatt open, long nowMs) {
+        if (!machine.enter(LinkMachine.State.DISCOVER, nowMs, "discoverServices", LinkMachine.NO_STATUS)) {
             return;
         }
-        stopScan();
-        BluetoothDevice device = pick.device;
-        if (device.getBondState() != BluetoothDevice.BOND_BONDED) {
-            try {
-                device.createBond();
-            } catch (SecurityException ex) {
-                block = "security";
-                return;
-            }
-            block = "bonding " + pick.label + " rssi=" + pick.rssi;
-        }
+        boolean started;
         try {
-            gatt = device.connectGatt(appContext, false, this, BluetoothDevice.TRANSPORT_LE);
-            block = "connecting " + pick.label + " rssi=" + pick.rssi + "; " + summarizeSeen();
+            started = open.discoverServices();
         } catch (SecurityException ex) {
-            block = "security";
+            started = false;
+        }
+        if (!started) {
+            failLink(nowMs, "discoverServices refused", LinkMachine.NO_STATUS);
         }
     }
 
-    private String summarizeSeen() {
-        List<Sighting> list = new ArrayList<Sighting>(seen.values());
-        Collections.sort(list, new Comparator<Sighting>() {
+    @SuppressLint("MissingPermission")
+    private void enterNotify(BluetoothGatt open, long nowMs) {
+        if (!machine.enter(LinkMachine.State.NOTIFY, nowMs, "enable notifications", LinkMachine.NO_STATUS)) {
+            return;
+        }
+        BluetoothGattCharacteristic notify = tx;
+        if (notify == null) {
+            failLink(nowMs, "no TX characteristic", LinkMachine.NO_STATUS);
+            return;
+        }
+        try {
+            if (!open.setCharacteristicNotification(notify, true)) {
+                failLink(nowMs, "setCharacteristicNotification refused", LinkMachine.NO_STATUS);
+                return;
+            }
+            BluetoothGattDescriptor descriptor = notify.getDescriptor(UUID.fromString(RadioLimits.CCCD_UUID));
+            if (descriptor == null) {
+                failLink(nowMs, "no_cccd", LinkMachine.NO_STATUS);
+                return;
+            }
+            descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+            if (!open.writeDescriptor(descriptor)) {
+                failLink(nowMs, "writeDescriptor refused", LinkMachine.NO_STATUS);
+            }
+        } catch (SecurityException ex) {
+            failLink(nowMs, "notify not allowed", LinkMachine.NO_STATUS);
+        }
+    }
+
+    // ---- failure and cleanup ----------------------------------------------
+
+    /** Record FAILED for the running stage, then release scanner, GATT and session. */
+    private void failLink(long nowMs, String reason, int status) {
+        LinkMachine.State st = machine.state();
+        if (st == LinkMachine.State.IDLE || st == LinkMachine.State.FAILED) {
+            cleanupAfterFailure(nowMs);
+            return;
+        }
+        machine.fail(nowMs, reason, status);
+        cleanupAfterFailure(nowMs);
+    }
+
+    @SuppressLint("MissingPermission")
+    private void cleanupAfterFailure(long nowMs) {
+        mainHandler.removeCallbacks(earlyConnect);
+        stopScan();
+        closeGatt();
+        session.onDisconnected(nowMs);
+    }
+
+    @SuppressLint("MissingPermission")
+    private void closeGatt() {
+        BluetoothGatt open = gatt;
+        gatt = null;
+        rx = null;
+        tx = null;
+        if (open == null) {
+            return;
+        }
+        try {
+            open.disconnect();
+        } catch (SecurityException ignored) {
+            // CONNECT permission revoked; close below may also fail.
+        }
+        try {
+            open.close();
+        } catch (SecurityException ignored) {
+            // nothing more to release
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private void stopScan() {
+        if (!scanning || scanner == null) {
+            scanning = false;
+            return;
+        }
+        try {
+            scanner.stopScan(scans);
+        } catch (SecurityException ex) {
+            Log.w(TAG, "stopScan denied");
+        } catch (IllegalArgumentException ignored) {
+            // callback already gone
+        }
+        scanning = false;
+    }
+
+    // ---- GATT callbacks, always handled on the main thread -----------------
+
+    private void runOnMain(Runnable r) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            r.run();
+        } else {
+            mainHandler.post(r);
+        }
+    }
+
+    private final class Callback extends BluetoothGattCallback {
+        @Override
+        public void onConnectionStateChange(final BluetoothGatt g, final int status, final int newState) {
+            runOnMain(new Runnable() {
+                @Override
+                public void run() {
+                    handleConnectionState(g, status, newState);
+                }
+            });
+        }
+
+        @Override
+        public void onServicesDiscovered(final BluetoothGatt g, final int status) {
+            runOnMain(new Runnable() {
+                @Override
+                public void run() {
+                    handleServices(g, status);
+                }
+            });
+        }
+
+        @Override
+        public void onMtuChanged(final BluetoothGatt g, final int mtu, final int status) {
+            runOnMain(new Runnable() {
+                @Override
+                public void run() {
+                    handleMtu(g, mtu, status);
+                }
+            });
+        }
+
+        @Override
+        public void onDescriptorWrite(final BluetoothGatt g, final BluetoothGattDescriptor descriptor, final int status) {
+            runOnMain(new Runnable() {
+                @Override
+                public void run() {
+                    handleDescriptorWrite(g, status);
+                }
+            });
+        }
+
+        // API 33+ delivers the value here. Older releases use the two-argument form below.
+        @Override
+        public void onCharacteristicChanged(BluetoothGatt g, BluetoothGattCharacteristic characteristic, byte[] value) {
+            deliverNotification(g, value == null ? new byte[0] : copyOf(value));
+        }
+
+        @Override
+        public void onCharacteristicChanged(BluetoothGatt g, BluetoothGattCharacteristic characteristic) {
+            if (characteristic == null) {
+                return;
+            }
+            byte[] value = characteristic.getValue();
+            deliverNotification(g, value == null ? new byte[0] : copyOf(value));
+        }
+
+        @Override
+        public void onCharacteristicWrite(final BluetoothGatt g, BluetoothGattCharacteristic characteristic, final int status) {
+            runOnMain(new Runnable() {
+                @Override
+                public void run() {
+                    if (g != gatt || status == BluetoothGatt.GATT_SUCCESS) {
+                        return;
+                    }
+                    session.engine().counters().inc("gatt_write_status_" + status);
+                    machine.note(System.currentTimeMillis(), "write callback", status);
+                }
+            });
+        }
+    }
+
+    private static byte[] copyOf(byte[] value) {
+        byte[] copy = new byte[value.length];
+        System.arraycopy(value, 0, copy, 0, value.length);
+        return copy;
+    }
+
+    private void deliverNotification(final BluetoothGatt g, final byte[] copy) {
+        runOnMain(new Runnable() {
             @Override
-            public int compare(Sighting a, Sighting b) {
-                return Integer.compare(b.rssi, a.rssi);
+            public void run() {
+                if (g != gatt) {
+                    return;
+                }
+                session.onNotification(copy, System.currentTimeMillis());
             }
         });
+    }
+
+    @SuppressLint("MissingPermission")
+    private void handleConnectionState(BluetoothGatt g, int status, int newState) {
+        long now = System.currentTimeMillis();
+        if (g != gatt) {
+            // A client we already closed or replaced. Release it and ignore.
+            if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                try {
+                    g.close();
+                } catch (SecurityException ignored) {
+                    // nothing to do
+                }
+            }
+            return;
+        }
+        LinkMachine.State st = machine.state();
+        if (status != BluetoothGatt.GATT_SUCCESS) {
+            failLink(now, st == LinkMachine.State.READY ? "radio disconnected" : "gatt error", status);
+            return;
+        }
+        if (newState == BluetoothProfile.STATE_CONNECTED) {
+            if (st != LinkMachine.State.CONNECTING) {
+                machine.note(now, "connected callback in " + st, LinkMachine.NO_STATUS);
+                return;
+            }
+            session.onConnected(now);
+            int bond;
+            try {
+                bond = g.getDevice().getBondState();
+            } catch (SecurityException ex) {
+                failLink(now, "bond state not readable", LinkMachine.NO_STATUS);
+                return;
+            }
+            if (bond == BluetoothDevice.BOND_BONDED) {
+                enterDiscover(g, now);
+                return;
+            }
+            // Connect first, pair second: createBond only once the link is up.
+            if (!machine.enter(LinkMachine.State.PAIRING, now, "bond state " + bond, LinkMachine.NO_STATUS)) {
+                return;
+            }
+            if (bond == BluetoothDevice.BOND_BONDING) {
+                sawBonding = true;
+                return;
+            }
+            try {
+                if (!g.getDevice().createBond()) {
+                    failLink(now, "createBond refused", LinkMachine.NO_STATUS);
+                }
+            } catch (SecurityException ex) {
+                failLink(now, "createBond not allowed", LinkMachine.NO_STATUS);
+            }
+            return;
+        }
+        if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+            String why = st == LinkMachine.State.READY
+                    ? "radio disconnected"
+                    : "disconnected during " + st.name().toLowerCase(Locale.US);
+            failLink(now, why, status);
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private void handleServices(BluetoothGatt g, int status) {
+        long now = System.currentTimeMillis();
+        if (g != gatt || machine.state() != LinkMachine.State.DISCOVER) {
+            return;
+        }
+        if (status != BluetoothGatt.GATT_SUCCESS) {
+            failLink(now, "discover_failed", status);
+            return;
+        }
+        BluetoothGattService service = g.getService(SERVICE);
+        if (service == null) {
+            failLink(now, "no_service", LinkMachine.NO_STATUS);
+            return;
+        }
+        rx = service.getCharacteristic(UUID.fromString(RadioLimits.RX_UUID));
+        tx = service.getCharacteristic(UUID.fromString(RadioLimits.TX_UUID));
+        if (rx == null || tx == null) {
+            failLink(now, "no_characteristic", LinkMachine.NO_STATUS);
+            return;
+        }
+        if (!machine.enter(LinkMachine.State.MTU, now, "requestMtu " + RadioLimits.REQUEST_MTU, LinkMachine.NO_STATUS)) {
+            return;
+        }
+        boolean asked;
+        try {
+            asked = g.requestMtu(RadioLimits.REQUEST_MTU);
+        } catch (SecurityException ex) {
+            asked = false;
+        }
+        if (!asked) {
+            // Not fatal by itself: carry on at the default MTU. If the handshake then cannot be
+            // written, the link fails with "MTU too small (n)".
+            machine.note(now, "requestMtu refused, using 23", LinkMachine.NO_STATUS);
+            session.onMtu(23, now);
+            enterNotify(g, now);
+        }
+    }
+
+    private void handleMtu(BluetoothGatt g, int mtu, int status) {
+        long now = System.currentTimeMillis();
+        if (g != gatt || machine.state() != LinkMachine.State.MTU) {
+            return;
+        }
+        int negotiated = status == BluetoothGatt.GATT_SUCCESS ? mtu : 23;
+        if (status != BluetoothGatt.GATT_SUCCESS) {
+            machine.note(now, "mtu callback failed, using 23", status);
+        }
+        session.onMtu(negotiated, now);
+        enterNotify(g, now);
+    }
+
+    private void handleDescriptorWrite(BluetoothGatt g, int status) {
+        long now = System.currentTimeMillis();
+        if (g != gatt || machine.state() != LinkMachine.State.NOTIFY) {
+            return;
+        }
+        if (status != BluetoothGatt.GATT_SUCCESS) {
+            failLink(now, "cccd_failed", status);
+            return;
+        }
+        session.onNotifications(true);
+        machine.enter(LinkMachine.State.HANDSHAKE, now, "notifications on", LinkMachine.NO_STATUS);
+    }
+
+    // ---- scan helpers ------------------------------------------------------
+
+    private String summarizeSeen(int limit) {
+        List<Sighting> list = sortedSeen();
         StringBuilder sb = new StringBuilder();
         sb.append("seen=").append(list.size());
-        int n = Math.min(5, list.size());
+        int n = Math.min(limit, list.size());
         for (int i = 0; i < n; i++) {
             Sighting s = list.get(i);
             sb.append(i == 0 ? " [" : "; ");
-            sb.append(s.label).append(' ').append(s.rssi).append("dBm");
-            if (s.match) {
+            sb.append(s.label).append(' ').append(s.rssi);
+            if (s.match()) {
                 sb.append('*');
             }
         }
@@ -380,6 +916,17 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
             sb.append(']');
         }
         return sb.toString();
+    }
+
+    private List<Sighting> sortedSeen() {
+        List<Sighting> list = new ArrayList<Sighting>(seen.values());
+        Collections.sort(list, new Comparator<Sighting>() {
+            @Override
+            public int compare(Sighting a, Sighting b) {
+                return Integer.compare(b.rssi, a.rssi);
+            }
+        });
+        return list;
     }
 
     private static boolean hasServiceUuid(ScanRecord record) {
@@ -394,13 +941,8 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
                 }
             }
         }
-        // Some stacks only expose 128-bit UUIDs via the parcel list above.
-        // Also accept an exact match against the sparse parcel map when present.
         Map<ParcelUuid, byte[]> sparse = record.getServiceData();
-        if (sparse != null && sparse.containsKey(SERVICE_PARCEL)) {
-            return true;
-        }
-        return false;
+        return sparse != null && sparse.containsKey(SERVICE_PARCEL);
     }
 
     private static boolean isMeshCoreName(String name) {
@@ -408,6 +950,31 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
             return false;
         }
         return name.toLowerCase(Locale.US).startsWith("meshcore");
+    }
+
+    @SuppressLint("MissingPermission")
+    private static String safeName(BluetoothDevice device) {
+        try {
+            String name = device.getName();
+            return name == null ? "" : name.trim();
+        } catch (SecurityException ex) {
+            return "";
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private static List<BluetoothDevice> bondedMeshCore(BluetoothAdapter adapter) {
+        List<BluetoothDevice> out = new ArrayList<BluetoothDevice>();
+        Set<BluetoothDevice> bonded = adapter.getBondedDevices();
+        if (bonded == null) {
+            return out;
+        }
+        for (BluetoothDevice device : bonded) {
+            if (isMeshCoreName(safeName(device))) {
+                out.add(device);
+            }
+        }
+        return out;
     }
 
     @SuppressLint("MissingPermission")
@@ -419,146 +986,132 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
                 return fromRecord.trim();
             }
         }
-        try {
-            String fromDevice = device.getName();
-            if (fromDevice != null && !fromDevice.isEmpty()) {
-                return fromDevice.trim();
-            }
-        } catch (SecurityException ignored) {
-            // CONNECT may be required for getName on API 31+; ScanRecord is enough.
-        }
-        return "";
-    }
-
-    @Override
-    @SuppressLint("MissingPermission")
-    public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
-        long now = System.currentTimeMillis();
-        if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
-            session.onConnected(now);
-            try {
-                gatt.discoverServices();
-            } catch (SecurityException ex) {
-                block = "security";
-            }
-            return;
-        }
-        if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-            session.onDisconnected(now);
-            block = "disconnected";
-            // Release the client so a later start() can scan again. Leaving
-            // gatt set made reconnectDue report already_connected forever.
-            if (this.gatt == gatt) {
-                this.gatt = null;
-                rx = null;
-                tx = null;
-            }
-            try {
-                gatt.close();
-            } catch (SecurityException ex) {
-                block = "security";
-            }
-        }
-    }
-
-    @Override
-    @SuppressLint("MissingPermission")
-    public void onServicesDiscovered(BluetoothGatt gatt, int status) {
-        if (status != BluetoothGatt.GATT_SUCCESS) {
-            block = "discover_failed";
-            return;
-        }
-        BluetoothGattService service = gatt.getService(UUID.fromString(RadioLimits.SERVICE_UUID));
-        if (service == null) {
-            block = "no_service";
-            return;
-        }
-        rx = service.getCharacteristic(UUID.fromString(RadioLimits.RX_UUID));
-        tx = service.getCharacteristic(UUID.fromString(RadioLimits.TX_UUID));
-        if (rx == null || tx == null) {
-            block = "no_characteristic";
-            return;
-        }
-        try {
-            gatt.requestMtu(RadioLimits.REQUEST_MTU);
-        } catch (SecurityException ex) {
-            block = "security";
-        }
-    }
-
-    @Override
-    @SuppressLint("MissingPermission")
-    public void onMtuChanged(BluetoothGatt gatt, int mtu, int status) {
-        int negotiated = status == BluetoothGatt.GATT_SUCCESS ? mtu : 23;
-        session.onMtu(negotiated, System.currentTimeMillis());
-        BluetoothGattCharacteristic notify = tx;
-        if (notify == null) {
-            return;
-        }
-        try {
-            gatt.setCharacteristicNotification(notify, true);
-            BluetoothGattDescriptor descriptor = notify.getDescriptor(UUID.fromString(RadioLimits.CCCD_UUID));
-            if (descriptor == null) {
-                block = "no_cccd";
-                return;
-            }
-            descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
-            gatt.writeDescriptor(descriptor);
-        } catch (SecurityException ex) {
-            block = "security";
-        }
-    }
-
-    @Override
-    public void onDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
-        if (status == BluetoothGatt.GATT_SUCCESS) {
-            session.onNotifications(true);
-            block = "notify";
-            return;
-        }
-        block = "cccd_failed";
-    }
-
-    @Override
-    public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
-        if (characteristic == null) {
-            return;
-        }
-        byte[] value = characteristic.getValue();
-        if (value == null) {
-            session.onNotification(new byte[0], System.currentTimeMillis());
-            return;
-        }
-        byte[] copy = new byte[value.length];
-        System.arraycopy(value, 0, copy, 0, value.length);
-        session.onNotification(copy, System.currentTimeMillis());
-    }
-
-    @Override
-    public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
-        if (status != BluetoothGatt.GATT_SUCCESS) {
-            block = "write_failed";
-        }
-    }
-
-    @SuppressLint("MissingPermission")
-    private void stopScan() {
-        scanDeadlineMs = 0L;
-        if (!scanning || scanner == null) {
-            scanning = false;
-            return;
-        }
-        try {
-            scanner.stopScan(scans);
-        } catch (SecurityException ex) {
-            block = "security";
-        } catch (IllegalArgumentException ignored) {
-            // callback already gone
-        }
-        scanning = false;
+        return safeName(device);
     }
 
     private static boolean granted(Context context, String permission) {
         return context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    // ---- diagnostics (R6) --------------------------------------------------
+
+    /**
+     * Link part of the COPY DIAG text. Holds no PIN, key or frame bytes. Bonded
+     * device addresses are shortened to their last two bytes.
+     */
+    @SuppressLint("MissingPermission")
+    public String diagnostics(Context context, long nowMs) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("link state=").append(machine.state());
+        if (machine.state() == LinkMachine.State.FAILED) {
+            sb.append(" failStage=").append(machine.failStage()).append(" reason=").append(machine.failReason());
+            if (machine.failStatus() != LinkMachine.NO_STATUS) {
+                sb.append(" gattStatus=").append(machine.failStatus());
+            }
+        }
+        sb.append(" autoRetry=").append(machine.autoRetry()).append('\n');
+        sb.append(permissions(context).detail(Build.VERSION.SDK_INT)).append('\n');
+        BluetoothManager manager = (BluetoothManager) context.getSystemService(Context.BLUETOOTH_SERVICE);
+        BluetoothAdapter adapter = manager == null ? null : manager.getAdapter();
+        sb.append("bluetooth=").append(adapter == null ? "none" : (adapter.isEnabled() ? "on" : "off"));
+        sb.append(" location=").append(locationState(context)).append('\n');
+        try {
+            if (adapter != null && permissions(context).connect) {
+                Set<BluetoothDevice> bonded = adapter.getBondedDevices();
+                int count = 0;
+                if (bonded != null) {
+                    for (BluetoothDevice device : bonded) {
+                        String name = safeName(device);
+                        if (isMeshCoreName(name)) {
+                            count++;
+                            sb.append("bonded ").append(name).append(' ').append(shortAddress(device))
+                                    .append(" bond=").append(bondName(device.getBondState())).append('\n');
+                        }
+                    }
+                }
+                if (count == 0) {
+                    sb.append("bonded MeshCore devices: none\n");
+                }
+            } else {
+                sb.append("bonded list: unavailable (no permission or adapter)\n");
+            }
+        } catch (SecurityException ex) {
+            sb.append("bonded list: denied\n");
+        }
+        try {
+            if (manager != null && permissions(context).connect) {
+                List<BluetoothDevice> connected = manager.getConnectedDevices(BluetoothProfile.GATT);
+                sb.append("gattConnected=").append(connected == null ? 0 : connected.size());
+                if (connected != null) {
+                    for (BluetoothDevice device : connected) {
+                        String name = safeName(device);
+                        if (isMeshCoreName(name)) {
+                            sb.append(" MeshCore:").append(name).append(' ').append(shortAddress(device));
+                        }
+                    }
+                }
+                sb.append(" (unverified: may not list other apps' connections)\n");
+            }
+        } catch (SecurityException ex) {
+            sb.append("gattConnected: denied\n");
+        }
+        List<Sighting> list = sortedSeen();
+        sb.append("last scan seen=").append(list.size()).append('\n');
+        int n = Math.min(10, list.size());
+        for (int i = 0; i < n; i++) {
+            Sighting s = list.get(i);
+            sb.append("  ").append(s.label).append(' ').append(s.rssi).append("dBm uuid=")
+                    .append(s.uuid ? "Y" : "n").append(" name=").append(s.nameMatch ? "Y" : "n").append('\n');
+        }
+        sb.append("stages:\n");
+        SimpleDateFormat fmt = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
+        for (LinkMachine.Entry entry : machine.history()) {
+            sb.append("  ").append(fmt.format(new Date(entry.atMs))).append(' ').append(entry.state).append(' ')
+                    .append(entry.detail);
+            if (entry.status != LinkMachine.NO_STATUS) {
+                sb.append(" status=").append(entry.status);
+            }
+            sb.append('\n');
+        }
+        sb.append("session mtu=").append(session.mtu()).append(" connected=").append(session.connected())
+                .append(" ready=").append(session.ready()).append(" writes=").append(session.writesEnabled()).append('\n');
+        sb.append("session trace:\n");
+        for (String line : session.trace()) {
+            sb.append("  ").append(line).append('\n');
+        }
+        sb.append("counters: ").append(session.engine().counters().snapshot()).append('\n');
+        return sb.toString();
+    }
+
+    private static String locationState(Context context) {
+        try {
+            LocationManager lm = (LocationManager) context.getSystemService(Context.LOCATION_SERVICE);
+            if (lm == null) {
+                return "unknown";
+            }
+            if (Build.VERSION.SDK_INT >= 28) {
+                return lm.isLocationEnabled() ? "on" : "off";
+            }
+            int mode = Settings.Secure.getInt(context.getContentResolver(), Settings.Secure.LOCATION_MODE, 0);
+            return mode != 0 ? "on" : "off";
+        } catch (RuntimeException ex) {
+            return "unknown";
+        }
+    }
+
+    private static String bondName(int bond) {
+        switch (bond) {
+            case BluetoothDevice.BOND_BONDED: return "BONDED";
+            case BluetoothDevice.BOND_BONDING: return "BONDING";
+            default: return "NONE";
+        }
+    }
+
+    private static String shortAddress(BluetoothDevice device) {
+        String address = device.getAddress();
+        if (address == null || address.length() < 5) {
+            return "";
+        }
+        return "..." + address.substring(address.length() - 5);
     }
 }

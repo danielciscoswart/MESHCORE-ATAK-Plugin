@@ -3,76 +3,137 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:padding="8dp">
+    android:padding="6dp">
 
-    <!-- Action buttons stay at the top so landscape ATAK panes always show them. -->
-    <Button
-        android:id="@+id/meshcore_connect"
+    <!-- Fixed header: never inside a scroll area. Everything needed for the
+         connect test is here: three buttons side by side and one status line. -->
+    <LinearLayout
+        android:id="@+id/meshcore_header"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="@string/connect" />
+        android:orientation="vertical">
 
-    <Button
-        android:id="@+id/meshcore_disconnect"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="@string/disconnect" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
 
-    <Button
-        android:id="@+id/meshcore_opt_in"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="@string/opt_in" />
+            <Button
+                android:id="@+id/meshcore_connect"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:minWidth="0dp"
+                android:minHeight="40dp"
+                android:maxLines="1"
+                android:paddingLeft="4dp"
+                android:paddingRight="4dp"
+                android:textAllCaps="false"
+                android:textSize="12sp"
+                android:text="@string/connect" />
 
-    <EditText
-        android:id="@+id/meshcore_room"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:hint="@string/room_hint"
-        android:inputType="text"
-        android:maxLength="32"
-        android:textSize="12sp" />
+            <Button
+                android:id="@+id/meshcore_disconnect"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:minWidth="0dp"
+                android:minHeight="40dp"
+                android:maxLines="1"
+                android:paddingLeft="4dp"
+                android:paddingRight="4dp"
+                android:textAllCaps="false"
+                android:textSize="12sp"
+                android:text="@string/disconnect" />
 
-    <EditText
-        android:id="@+id/meshcore_out_text"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:hint="@string/chat_hint"
-        android:inputType="textCapSentences|textMultiLine"
-        android:maxLength="200"
-        android:textSize="12sp" />
+            <Button
+                android:id="@+id/meshcore_copy_diag"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:minWidth="0dp"
+                android:minHeight="40dp"
+                android:maxLines="1"
+                android:paddingLeft="4dp"
+                android:paddingRight="4dp"
+                android:textAllCaps="false"
+                android:textSize="12sp"
+                android:text="@string/copy_diag" />
+        </LinearLayout>
 
-    <Button
-        android:id="@+id/meshcore_send"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="@string/send_chat" />
+        <TextView
+            android:id="@+id/meshcore_status_line"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:singleLine="true"
+            android:paddingTop="2dp"
+            android:text="@string/status_line_idle"
+            android:textSize="14sp" />
+    </LinearLayout>
 
-    <CheckBox
-        android:id="@+id/meshcore_watch"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:checked="false"
-        android:text="@string/watch_geochat"
-        android:textSize="12sp" />
-
-    <!-- Status scrolls inside the pane; long scan/caveat text must not push buttons off-screen. -->
+    <!-- Everything else scrolls below the header. -->
     <ScrollView
-        android:id="@+id/meshcore_status_scroll"
+        android:id="@+id/meshcore_scroll"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
         android:fillViewport="false"
         android:scrollbars="vertical">
 
-        <TextView
-            android:id="@+id/meshcore_status"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:paddingTop="6dp"
-            android:text="@string/status_idle"
-            android:textIsSelectable="true"
-            android:textSize="11sp"
-            android:typeface="monospace" />
+            android:orientation="vertical">
+
+            <Button
+                android:id="@+id/meshcore_opt_in"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/opt_in" />
+
+            <EditText
+                android:id="@+id/meshcore_room"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/room_hint"
+                android:inputType="text"
+                android:maxLength="32"
+                android:textSize="12sp" />
+
+            <EditText
+                android:id="@+id/meshcore_out_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/chat_hint"
+                android:inputType="textCapSentences|textMultiLine"
+                android:maxLength="200"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/meshcore_send"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/send_chat" />
+
+            <CheckBox
+                android:id="@+id/meshcore_watch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:checked="false"
+                android:text="@string/watch_geochat"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/meshcore_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="6dp"
+                android:text="@string/status_idle"
+                android:textIsSelectable="true"
+                android:textSize="11sp"
+                android:typeface="monospace" />
+        </LinearLayout>
     </ScrollView>
 </LinearLayout>

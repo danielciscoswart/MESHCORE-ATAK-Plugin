@@ -41,6 +41,12 @@ public final class AllTests {
         test("channel privacy sequence and honest send status", TransportChecks::allegations);
         test("companion session loss duplicate bounds reconnect", TransportChecks::session);
         test("plugin lifecycle contacts chat markers", PluginChecks::lifecycle);
+        test("B1 tick never closes a link in progress", LinkMachineChecks::tickNeverClosesLinkInProgress);
+        test("stage time limits, status codes, auto-retry rules", LinkMachineChecks::stageTimeouts);
+        test("late callbacks cannot revive a failed link", LinkMachineChecks::lateCallbacksCannotReviveALink);
+        test("connect button labels", LinkMachineChecks::buttonLabels);
+        test("B3 refused write keeps the frame", LinkMachineChecks::refusedWriteKeepsFrame);
+        test("R5 handshake failures are visible", LinkMachineChecks::handshakeFailuresAreVisible);
         test("optional mctak fixtures", AllTests::fixtures);
         test("optional official meshcore tree", TransportChecks::officialTree);
         System.out.println("PASSED " + passed + " FAILED " + failed + " SKIPPED " + skipped);

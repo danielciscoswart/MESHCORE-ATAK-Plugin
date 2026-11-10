@@ -1,6 +1,8 @@
 package dev.meshcore.atak.host;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.os.Build;
@@ -13,6 +15,7 @@ import android.widget.CheckBox;
 import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.atak.plugins.impl.PluginContextProvider;
 import com.atak.plugins.impl.PluginLayoutInflater;
@@ -41,6 +44,8 @@ import gov.tak.platform.marshal.MarshalManager;
  */
 public final class MeshCoreAtakPlugin implements IPlugin {
     static final String TAG = "MeshCoreAtak";
+    /** Shown at the start of the status line so the installed build is obvious. */
+    static final String BUILD_TAG = "v7";
 
     private final IServiceController serviceController;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -52,6 +57,12 @@ public final class MeshCoreAtakPlugin implements IPlugin {
     private ExperimentalGeoChatWatch geoChatWatch;
     private Pane pane;
     private TextView status;
+    private TextView statusLine;
+    private Button connectButton;
+    private Button disconnectButton;
+    private View paneRoot;
+    private View paneHeader;
+    private View paneScroll;
     private boolean running;
     private boolean linkWanted;
     private boolean locationOptIn;
@@ -82,9 +93,11 @@ public final class MeshCoreAtakPlugin implements IPlugin {
                 if (radio != null) {
                     // Without flush, GATT never writes companion handshake frames.
                     radio.flush(now);
-                    // Only auto-reconnect after the user tapped CONNECT (linkWanted).
-                    // Otherwise plugin start would BLE-scan with no user action.
-                    if (linkWanted && host.session().reconnectDue(now)) {
+                    // Auto-reconnect only after the user tapped CONNECT (linkWanted)
+                    // AND a link that had reached READY was lost. The link refuses
+                    // to start while any stage is in progress (B1), and a failed
+                    // attempt never retries on its own, so it cannot loop silently.
+                    if (radio.autoReconnectDue(linkWanted)) {
                         radio.start(pluginContext, now);
                     }
                 }
@@ -134,6 +147,17 @@ public final class MeshCoreAtakPlugin implements IPlugin {
                 created.onCreate();
                 host = created;
                 radio = new MeshcoreGattLink(host.session());
+                radio.setListener(new MeshcoreGattLink.Listener() {
+                    @Override
+                    public void onChanged() {
+                        showStatus();
+                    }
+
+                    @Override
+                    public void onOutcome(String text) {
+                        toast(text);
+                    }
+                });
                 geoChatWatch = new ExperimentalGeoChatWatch();
                 restoreSequence();
                 Log.d(TAG, "host created");
@@ -279,9 +303,16 @@ public final class MeshCoreAtakPlugin implements IPlugin {
             View root = PluginLayoutInflater.inflate(pluginContext,
                     dev.meshcore.atak.plugin.R.layout.meshcore_pane, null);
             status = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_status);
+            statusLine = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_status_line);
+            paneRoot = root;
+            paneHeader = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_header);
+            paneScroll = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_scroll);
             Button connect = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_connect);
+            Button copyDiag = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_copy_diag);
+            connectButton = connect;
             Button opt = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_opt_in);
             Button disconnect = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_disconnect);
+            disconnectButton = disconnect;
             final EditText room = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_room);
             final EditText outText = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_out_text);
             Button send = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_send);
@@ -297,9 +328,25 @@ public final class MeshCoreAtakPlugin implements IPlugin {
                     host.onStart();
                     linkWanted = true;
                     maybeRequestBlePermissions();
-                    boolean started = radio.start(pluginContext, System.currentTimeMillis());
-                    Log.d(TAG, "connect tap started=" + started + " block=" + radio.block());
+                    MeshcoreGattLink.StartResult result =
+                            radio.start(pluginContext, System.currentTimeMillis());
+                    Log.i(TAG, "connect tap result=" + result + " " + radio.summary(System.currentTimeMillis()));
+                    // Tap acknowledgement. A FAILED start already raised its own
+                    // "Failed: reason" toast from the link listener.
+                    if (result == MeshcoreGattLink.StartResult.STARTED) {
+                        toast("Connecting\u2026 up to ~20 s");
+                    } else if (result == MeshcoreGattLink.StartResult.BUSY) {
+                        toast("Already connecting");
+                    } else if (result == MeshcoreGattLink.StartResult.ALREADY_READY) {
+                        toast("Already connected");
+                    }
                     showStatus();
+                }
+            });
+            copyDiag.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View view) {
+                    copyDiagnostics();
                 }
             });
             opt.setOnClickListener(new View.OnClickListener() {
@@ -344,13 +391,14 @@ public final class MeshCoreAtakPlugin implements IPlugin {
                     if (host != null) {
                         host.onStop();
                     }
+                    toast("Disconnected");
                     showStatus();
                 }
             });
             pane = new PaneBuilder(root)
                     .setMetaValue(Pane.RELATIVE_LOCATION, Pane.Location.Default)
                     .setMetaValue(Pane.PREFERRED_WIDTH_RATIO, Double.valueOf(0.5d))
-                    .setMetaValue(Pane.PREFERRED_HEIGHT_RATIO, Double.valueOf(0.5d))
+                    .setMetaValue(Pane.PREFERRED_HEIGHT_RATIO, Double.valueOf(1.0d))
                     .build();
             uiService.showPane(pane, null);
             showStatus();
@@ -360,19 +408,37 @@ public final class MeshCoreAtakPlugin implements IPlugin {
     }
 
     private void showStatus() {
+        long now = System.currentTimeMillis();
+        if (host == null || radio == null) {
+            String text = startupError == null ? "not started" : startupError;
+            if (statusLine != null) {
+                statusLine.setText(BUILD_TAG + " | " + text);
+            }
+            if (status != null) {
+                status.setText(text);
+            }
+            if (disconnectButton != null) {
+                disconnectButton.setEnabled(false);
+            }
+            return;
+        }
+        // Header first: this is what Daniel sees without scrolling.
+        if (connectButton != null) {
+            connectButton.setText(radio.buttonLabel(now));
+        }
+        if (disconnectButton != null) {
+            disconnectButton.setEnabled(radio.disconnectEnabled());
+        }
+        if (statusLine != null) {
+            statusLine.setText(BUILD_TAG + " | " + radio.summary(now));
+        }
         if (status == null) {
             return;
         }
-        if (host == null || radio == null) {
-            status.setText(startupError == null ? "not started" : startupError);
-            return;
-        }
         Engine engine = host.engine();
-        String block = radio.block();
         MeshcoreGattLink.PermissionReport perms = MeshcoreGattLink.permissions(pluginContext);
-        // Compact dynamic lines first. Caveats stay below so the ScrollView
-        // can grow without covering Connect / Disconnect at the top of the pane.
-        status.setText("link=" + engine.link()
+        status.setText("build=" + BUILD_TAG
+                + "\nlink=" + engine.link()
                 + " ready=" + host.session().ready()
                 + " ch=" + engine.hasSelectedChannel()
                 + " loc=" + locationOptIn
@@ -380,9 +446,112 @@ public final class MeshCoreAtakPlugin implements IPlugin {
                 + "\nchat=" + lastChatStatus
                 + " watch=" + watchGeoChat
                 + "\nperms " + perms.detail(Build.VERSION.SDK_INT)
-                + "\n" + block
+                + "\nradio: " + radio.summary(now)
                 + "\n\nInbound traffic is unverified. Fragments over 165 bytes are not sent."
                 + "\nA contact UID is not a private radio destination.");
+    }
+
+    /** Context for toasts: ATAK's Activity when available, else the plugin context. */
+    private Context toastContext() {
+        try {
+            MapView mapView = MapView.getMapView();
+            if (mapView != null && mapView.getContext() != null) {
+                return mapView.getContext();
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "toast context lookup failed", t);
+        }
+        return pluginContext;
+    }
+
+    /** Short toast on the main thread. Two lines at most (Android 12+ cuts longer text). */
+    private void toast(final String text) {
+        Log.i(TAG, "toast: " + text);
+        final String shown = text.length() > 70 ? text.substring(0, 70) : text;
+        Runnable show = new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Context ctx = toastContext();
+                    if (ctx != null) {
+                        Toast.makeText(ctx, shown, Toast.LENGTH_SHORT).show();
+                    }
+                } catch (Throwable t) {
+                    Log.e(TAG, "toast failed", t);
+                }
+            }
+        };
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            show.run();
+        } else {
+            handler.post(show);
+        }
+    }
+
+    /** COPY DIAG: put the diagnostic text on the clipboard. No PIN, key or frame bytes. */
+    private void copyDiagnostics() {
+        String text;
+        try {
+            text = buildDiagnostics();
+        } catch (Throwable t) {
+            text = "diag failed: " + t.getClass().getName();
+            Log.e(TAG, "diag failed", t);
+        }
+        try {
+            Context ctx = toastContext();
+            ClipboardManager clipboard = (ClipboardManager) ctx.getSystemService(Context.CLIPBOARD_SERVICE);
+            clipboard.setPrimaryClip(ClipData.newPlainText("MeshCore ATAK diag", text));
+            toast("Diag copied. Paste it into chat.");
+        } catch (Throwable t) {
+            Log.e(TAG, "clipboard failed", t);
+            toast("Copy failed: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private String buildDiagnostics() {
+        long now = System.currentTimeMillis();
+        StringBuilder sb = new StringBuilder();
+        sb.append("MeshCore ATAK diag build=").append(BUILD_TAG).append('\n');
+        sb.append("android=").append(Build.VERSION.RELEASE).append(" sdk=").append(Build.VERSION.SDK_INT)
+                .append(" model=").append(Build.MODEL).append('\n');
+        sb.append("atak=").append(atakVersion()).append('\n');
+        if (radio != null && pluginContext != null) {
+            sb.append(radio.diagnostics(pluginContext, now));
+        } else {
+            sb.append("link: not started\n");
+        }
+        sb.append(paneMeasurements());
+        return sb.toString();
+    }
+
+    private String atakVersion() {
+        try {
+            Context ctx = toastContext();
+            String pkg = ctx.getPackageName();
+            android.content.pm.PackageInfo info = ctx.getPackageManager().getPackageInfo(pkg, 0);
+            return pkg + " " + info.versionName;
+        } catch (Throwable t) {
+            return "unknown";
+        }
+    }
+
+    /** Pane height against screen height: settles whether ATAK cut the pane off. */
+    private String paneMeasurements() {
+        try {
+            android.util.DisplayMetrics dm = pluginContext.getResources().getDisplayMetrics();
+            float d = dm.density;
+            return "pane: root=" + dp(paneRoot == null ? 0 : paneRoot.getHeight(), d)
+                    + "dp header=" + dp(paneHeader == null ? 0 : paneHeader.getHeight(), d)
+                    + "dp scroll=" + dp(paneScroll == null ? 0 : paneScroll.getHeight(), d)
+                    + "dp rootWidth=" + dp(paneRoot == null ? 0 : paneRoot.getWidth(), d)
+                    + "dp screen=" + dp(dm.widthPixels, d) + "x" + dp(dm.heightPixels, d) + "dp\n";
+        } catch (Throwable t) {
+            return "pane: not measurable\n";
+        }
+    }
+
+    private static int dp(int px, float density) {
+        return density <= 0f ? px : Math.round(px / density);
     }
 
     /**
