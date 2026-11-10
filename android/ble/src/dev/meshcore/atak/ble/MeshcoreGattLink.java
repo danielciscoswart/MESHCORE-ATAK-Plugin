@@ -11,7 +11,7 @@ import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothProfile;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
-import android.bluetooth.le.ScanFilter;
+import android.bluetooth.le.ScanRecord;
 import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
 import android.content.Context;
@@ -22,7 +22,13 @@ import android.os.ParcelUuid;
 import dev.meshcore.atak.transport.RadioLimits;
 import dev.meshcore.atak.transport.RadioSession;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -34,6 +40,14 @@ import java.util.UUID;
  * ESP32 {@code onWrite} copies one GATT write into one frame, and the
  * companion document says the same. Frames are not split. The PIN is not
  * read from device-info and is not logged. Characteristic values are not logged.
+ *
+ * <p>Scan is unfiltered. A result matches when the ScanRecord carries the
+ * Nordic UART service UUID, or when the advertised / device name starts with
+ * {@code MeshCore} (case-insensitive). Official ESP32 companion names are
+ * {@code MeshCore-} plus the node name (for example {@code MeshCore-CiscoKid}).
+ * nRF52 puts the name in the scan response only. During the 15s window the
+ * status lists how many BLE devices were seen and up to five names with RSSI
+ * so a plain custom name is still visible even when it did not match.
  *
  * <p>This class is the BLE adapter. It is not an ATAK plugin and it does not
  * start a foreground service. A stopped host must call {@link #stop()} so a
@@ -69,13 +83,41 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
         }
     }
 
+    private static final class Sighting {
+        final String key;
+        String label;
+        int rssi;
+        boolean match;
+        BluetoothDevice device;
+
+        Sighting(String key, String label, int rssi, boolean match, BluetoothDevice device) {
+            this.key = key;
+            this.label = label;
+            this.rssi = rssi;
+            this.match = match;
+            this.device = device;
+        }
+    }
+
     private final RadioSession session;
     private static final long SCAN_TIMEOUT_MS = 15_000L;
+    private static final UUID SERVICE = UUID.fromString(RadioLimits.SERVICE_UUID);
+    private static final ParcelUuid SERVICE_PARCEL = new ParcelUuid(SERVICE);
 
     private final ScanCallback scans = new ScanCallback() {
         @Override
         public void onScanResult(int callbackType, ScanResult result) {
-            onFound(result);
+            onSeen(result);
+        }
+
+        @Override
+        public void onBatchScanResults(List<ScanResult> results) {
+            if (results == null) {
+                return;
+            }
+            for (ScanResult result : results) {
+                onSeen(result);
+            }
         }
 
         @Override
@@ -95,6 +137,9 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
     private long scanDeadlineMs;
     private long scanRestartNotBeforeMs;
     private String block = "idle";
+    /** Address -> best sighting during the current scan window. */
+    private final Map<String, Sighting> seen = new LinkedHashMap<String, Sighting>();
+    private Sighting bestMatch;
 
     public MeshcoreGattLink(RadioSession session) {
         this.session = session;
@@ -118,8 +163,9 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
     }
 
     /**
-     * Start a filtered scan. Returns false when permission, radio, or scanner
-     * state does not allow it. This does not transmit a MeshCore frame.
+     * Start an unfiltered low-latency scan. Returns false when permission,
+     * radio, or scanner state does not allow it. This does not transmit a
+     * MeshCore frame.
      */
     @SuppressLint("MissingPermission")
     public boolean start(Context context, long nowMs) {
@@ -163,13 +209,13 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
         }
         this.appContext = context.getApplicationContext();
         this.scanner = found;
-        // Official companion advertises Nordic UART service UUID only.
-        // No name filter: firmware uses BLE_NAME_PREFIX + node name (often MeshCore-...).
-        ScanFilter filter = new ScanFilter.Builder()
-                .setServiceUuid(new ParcelUuid(UUID.fromString(RadioLimits.SERVICE_UUID)))
-                .build();
+        seen.clear();
+        bestMatch = null;
+        // Unfiltered: ESP32 puts the Nordic UART UUID in the advert; nRF52 puts
+        // the name in the scan response only. Name fallback catches MeshCore-*.
         try {
-            scanner.startScan(Collections.singletonList(filter),
+            scanner.startScan(
+                    null,
                     new ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(),
                     scans);
         } catch (SecurityException ex) {
@@ -182,7 +228,7 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
         scanning = true;
         scanDeadlineMs = nowMs + SCAN_TIMEOUT_MS;
         scanRestartNotBeforeMs = 0L;
-        block = "scanning uuid=" + RadioLimits.SERVICE_UUID.substring(0, 8);
+        block = "scanning unfiltered (uuid or MeshCore* name); seen=0";
         return true;
     }
 
@@ -190,6 +236,8 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
     public void stop() {
         session.setWritesEnabled(false);
         stopScan();
+        seen.clear();
+        bestMatch = null;
         BluetoothGatt open = gatt;
         gatt = null;
         rx = null;
@@ -209,10 +257,7 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
     @SuppressLint("MissingPermission")
     public void flush(long nowMs) {
         if (scanning && scanDeadlineMs > 0L && nowMs >= scanDeadlineMs) {
-            stopScan();
-            // Back off so the 1s host tick does not restart scan immediately.
-            scanRestartNotBeforeMs = nowMs + 5_000L;
-            block = "scan_timeout (no MeshCore companion advert; close MeshCore app, confirm Companion BLE firmware)";
+            finishScanWindow(nowMs);
         }
         session.tick(nowMs);
         byte[] frame = session.pollWrite();
@@ -234,12 +279,67 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
     }
 
     @SuppressLint("MissingPermission")
-    private void onFound(ScanResult result) {
-        if (result == null || result.getDevice() == null || gatt != null) {
+    private void onSeen(ScanResult result) {
+        if (result == null || result.getDevice() == null || gatt != null || !scanning) {
+            return;
+        }
+        BluetoothDevice device = result.getDevice();
+        String address = device.getAddress();
+        if (address == null || address.isEmpty()) {
+            return;
+        }
+        String name = resolveName(result, device);
+        boolean match = hasServiceUuid(result.getScanRecord()) || isMeshCoreName(name);
+        int rssi = result.getRssi();
+        String label = (name == null || name.isEmpty()) ? "(no-name)" : name;
+        Sighting prior = seen.get(address);
+        if (prior == null) {
+            prior = new Sighting(address, label, rssi, match, device);
+            seen.put(address, prior);
+        } else {
+            if (rssi > prior.rssi) {
+                prior.rssi = rssi;
+            }
+            if (name != null && !name.isEmpty()) {
+                prior.label = name;
+            }
+            prior.match = prior.match || match;
+            prior.device = device;
+        }
+        if (match && (bestMatch == null || rssi > bestMatch.rssi)) {
+            bestMatch = prior;
+        }
+        // Keep scanning the full window so status can list nearby names
+        // (including a plain custom node name like CiscoKid) before we connect
+        // to the strongest MeshCore match at timeout.
+        block = "scanning unfiltered; " + summarizeSeen();
+    }
+
+    @SuppressLint("MissingPermission")
+    private void finishScanWindow(long nowMs) {
+        stopScan();
+        // Back off so the 1s host tick does not restart scan immediately.
+        scanRestartNotBeforeMs = nowMs + 5_000L;
+        if (bestMatch != null && gatt == null) {
+            connectBest(bestMatch);
+            return;
+        }
+        if (seen.isEmpty()) {
+            block = "scan_timeout seen=0 (no BLE adverts; turn Location ON on some phones, "
+                    + "close MeshCore app, confirm Companion BLE firmware, radio powered)";
+            return;
+        }
+        block = "scan_timeout no MeshCore match; " + summarizeSeen()
+                + " (close MeshCore app; look for MeshCore-<node> or your node name)";
+    }
+
+    @SuppressLint("MissingPermission")
+    private void connectBest(Sighting pick) {
+        if (pick == null || pick.device == null || gatt != null) {
             return;
         }
         stopScan();
-        BluetoothDevice device = result.getDevice();
+        BluetoothDevice device = pick.device;
         if (device.getBondState() != BluetoothDevice.BOND_BONDED) {
             try {
                 device.createBond();
@@ -247,14 +347,87 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
                 block = "security";
                 return;
             }
-            block = "bonding";
+            block = "bonding " + pick.label + " rssi=" + pick.rssi;
         }
         try {
             gatt = device.connectGatt(appContext, false, this, BluetoothDevice.TRANSPORT_LE);
-            block = "connecting";
+            block = "connecting " + pick.label + " rssi=" + pick.rssi + "; " + summarizeSeen();
         } catch (SecurityException ex) {
             block = "security";
         }
+    }
+
+    private String summarizeSeen() {
+        List<Sighting> list = new ArrayList<Sighting>(seen.values());
+        Collections.sort(list, new Comparator<Sighting>() {
+            @Override
+            public int compare(Sighting a, Sighting b) {
+                return Integer.compare(b.rssi, a.rssi);
+            }
+        });
+        StringBuilder sb = new StringBuilder();
+        sb.append("seen=").append(list.size());
+        int n = Math.min(5, list.size());
+        for (int i = 0; i < n; i++) {
+            Sighting s = list.get(i);
+            sb.append(i == 0 ? " [" : "; ");
+            sb.append(s.label).append(' ').append(s.rssi).append("dBm");
+            if (s.match) {
+                sb.append('*');
+            }
+        }
+        if (n > 0) {
+            sb.append(']');
+        }
+        return sb.toString();
+    }
+
+    private static boolean hasServiceUuid(ScanRecord record) {
+        if (record == null) {
+            return false;
+        }
+        List<ParcelUuid> uuids = record.getServiceUuids();
+        if (uuids != null) {
+            for (ParcelUuid uuid : uuids) {
+                if (SERVICE_PARCEL.equals(uuid)) {
+                    return true;
+                }
+            }
+        }
+        // Some stacks only expose 128-bit UUIDs via the parcel list above.
+        // Also accept an exact match against the sparse parcel map when present.
+        Map<ParcelUuid, byte[]> sparse = record.getServiceData();
+        if (sparse != null && sparse.containsKey(SERVICE_PARCEL)) {
+            return true;
+        }
+        return false;
+    }
+
+    private static boolean isMeshCoreName(String name) {
+        if (name == null || name.isEmpty()) {
+            return false;
+        }
+        return name.toLowerCase(Locale.US).startsWith("meshcore");
+    }
+
+    @SuppressLint("MissingPermission")
+    private static String resolveName(ScanResult result, BluetoothDevice device) {
+        ScanRecord record = result.getScanRecord();
+        if (record != null) {
+            String fromRecord = record.getDeviceName();
+            if (fromRecord != null && !fromRecord.isEmpty()) {
+                return fromRecord.trim();
+            }
+        }
+        try {
+            String fromDevice = device.getName();
+            if (fromDevice != null && !fromDevice.isEmpty()) {
+                return fromDevice.trim();
+            }
+        } catch (SecurityException ignored) {
+            // CONNECT may be required for getName on API 31+; ScanRecord is enough.
+        }
+        return "";
     }
 
     @Override

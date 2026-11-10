@@ -3,14 +3,9 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:padding="12dp">
+    android:padding="8dp">
 
-    <TextView
-        android:id="@+id/meshcore_status"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="@string/status_idle" />
-
+    <!-- Action buttons stay at the top so landscape ATAK panes always show them. -->
     <Button
         android:id="@+id/meshcore_connect"
         android:layout_width="match_parent"
@@ -18,16 +13,16 @@
         android:text="@string/connect" />
 
     <Button
-        android:id="@+id/meshcore_opt_in"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="@string/opt_in" />
-
-    <Button
         android:id="@+id/meshcore_disconnect"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="@string/disconnect" />
+
+    <Button
+        android:id="@+id/meshcore_opt_in"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/opt_in" />
 
     <EditText
         android:id="@+id/meshcore_room"
@@ -35,7 +30,8 @@
         android:layout_height="wrap_content"
         android:hint="@string/room_hint"
         android:inputType="text"
-        android:maxLength="32" />
+        android:maxLength="32"
+        android:textSize="12sp" />
 
     <EditText
         android:id="@+id/meshcore_out_text"
@@ -43,7 +39,8 @@
         android:layout_height="wrap_content"
         android:hint="@string/chat_hint"
         android:inputType="textCapSentences|textMultiLine"
-        android:maxLength="200" />
+        android:maxLength="200"
+        android:textSize="12sp" />
 
     <Button
         android:id="@+id/meshcore_send"
@@ -56,5 +53,26 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:checked="false"
-        android:text="@string/watch_geochat" />
+        android:text="@string/watch_geochat"
+        android:textSize="12sp" />
+
+    <!-- Status scrolls inside the pane; long scan/caveat text must not push buttons off-screen. -->
+    <ScrollView
+        android:id="@+id/meshcore_status_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="false"
+        android:scrollbars="vertical">
+
+        <TextView
+            android:id="@+id/meshcore_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="6dp"
+            android:text="@string/status_idle"
+            android:textIsSelectable="true"
+            android:textSize="11sp"
+            android:typeface="monospace" />
+    </ScrollView>
 </LinearLayout>

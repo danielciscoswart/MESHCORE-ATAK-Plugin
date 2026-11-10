@@ -370,17 +370,19 @@ public final class MeshCoreAtakPlugin implements IPlugin {
         Engine engine = host.engine();
         String block = radio.block();
         MeshcoreGattLink.PermissionReport perms = MeshcoreGattLink.permissions(pluginContext);
-        status.setText("link " + engine.link()
-                + " sessionReady=" + host.session().ready()
-                + " channel=" + engine.hasSelectedChannel()
-                + " locationOptIn=" + locationOptIn
-                + " queued=" + engine.queued()
-                + " lastChat=" + lastChatStatus
-                + " watchGeoChat=" + watchGeoChat
+        // Compact dynamic lines first. Caveats stay below so the ScrollView
+        // can grow without covering Connect / Disconnect at the top of the pane.
+        status.setText("link=" + engine.link()
+                + " ready=" + host.session().ready()
+                + " ch=" + engine.hasSelectedChannel()
+                + " loc=" + locationOptIn
+                + " q=" + engine.queued()
+                + "\nchat=" + lastChatStatus
+                + " watch=" + watchGeoChat
                 + "\nperms " + perms.detail(Build.VERSION.SDK_INT)
-                + "\nInbound traffic is unverified. Fragments over 165 bytes are not sent."
-                + "\nA contact UID is not a private radio destination."
-                + "\n" + block);
+                + "\n" + block
+                + "\n\nInbound traffic is unverified. Fragments over 165 bytes are not sent."
+                + "\nA contact UID is not a private radio destination.");
     }
 
     /**
