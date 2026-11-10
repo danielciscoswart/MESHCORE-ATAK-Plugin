@@ -18,10 +18,22 @@ jobs:
           mkdir -p build
           ./scripts/test.sh | tee build/test-out.txt
       - name: Optional checks are not counted as passes
+        # No MESHCORE_ROOT or MESHCORE_TAK_FIXTURES checkout exists in CI, so the
+        # optional checks must print "skipped". The number of skips changes as
+        # optional tests are added, so it is not pinned here. Instead:
+        #   1. the summary must say FAILED 0,
+        #   2. every skip counted in the summary must also be printed as a
+        #      "skipped ..." line (a skip cannot be hidden), and
+        #   3. no optional check may report "ok optional" (it must not run here).
         run: |
-          grep -q "SKIPPED 2" build/test-out.txt
-          grep -q "skipped optional mctak fixtures" build/test-out.txt
-          grep -q "skipped optional official meshcore tree" build/test-out.txt
+          summary="$(grep -E '^PASSED [0-9]+ FAILED [0-9]+ SKIPPED [0-9]+$' build/test-out.txt | tail -n 1)"
+          echo "summary: $summary"
+          test -n "$summary"
+          echo "$summary" | grep -q ' FAILED 0 '
+          counted="$(echo "$summary" | sed -E 's/.*SKIPPED ([0-9]+)$/\1/')"
+          printed="$(grep -c '^skipped ' build/test-out.txt || true)"
+          echo "SKIPPED counted=$counted printed=$printed"
+          test "$counted" = "$printed"
           ! grep -q "ok optional" build/test-out.txt
       - name: Compile the BLE client against the public Android SDK
         run: ./scripts/compile-ble.sh
