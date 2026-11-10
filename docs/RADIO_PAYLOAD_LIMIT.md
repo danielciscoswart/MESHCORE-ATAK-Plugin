@@ -55,3 +55,13 @@ In commit `81dbae5` the send check is at line 1230, it compares against `MAX_GRO
 Short kinds fit under 165 and are what the simulated radios exchange: PLI is 28 bytes, a receipt is 19. A fragment does not. Shrinking the symbol, or defining a second header, would be a different protocol. That was not done.
 
 No radio was attached. The limit is from the firmware source above, not from a transmission.
+
+## v7.2: the 164-byte plugin cap and native channel text
+
+The plugin refuses any chat payload above **164** bytes (`Companion.SAFE_PAYLOAD`, 176 - 3 - 9 from MCTAK v0.2 section 4.3). The 165 limit above is the firmware's; `Mctak.radioWillAccept` still pins it.
+
+Native channel text (`CMD_SEND_CHANNEL_TXT_MSG`, opcode 3, opt-in switch) is built as `{3, 0, channel_idx, timestamp u32le, text}`. `BaseChatMesh::sendGroupMessage` (`BaseChatMesh.cpp`) writes `"<node_name>: <text>"` into a buffer limited by `MAX_TEXT_LEN` (160, `BaseChatMesh.h`) and silently truncates. With the 5-byte header (timestamp and type) the plugin allows `min(160 - (name + 2), 164 - 5 - (name + 2))` UTF-8 bytes, which is `159 - (name + 2)`. A text above that is refused, not truncated. A 4-byte node name allows 153 bytes.
+
+Both opcode 3 and opcode 62 end in `Mesh::createGroupDatagram`, which encrypts with the channel's stored secret (`Utils::encryptThenMAC(channel.secret, ...)`). The companion frame names the channel by index only.
+
+No radio was attached. These numbers come from source, not a transmission.

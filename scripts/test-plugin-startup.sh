@@ -19,14 +19,14 @@ text = java.read_text()
 start = text.index("public MeshCoreAtakPlugin(")
 end = text.index("public void onStart()")
 ctor = text[start:end]
-for banned in ("new MeshcoreGattLink", "new PluginHost", "onCreate(", "restoreSequence(", "FileWriter", "FileReader", "getDrawable"):
+for banned in ("new MeshcoreGattLink", "new PluginHost", "onCreate(", "restoreSequence(", "FileWriter", "FileReader", "getDrawable", "new PluginState", "getSharedPreferences"):
     if banned in ctor:
         raise SystemExit("constructor still contains " + banned)
 if "getDrawable" in text or "VectorDrawable" in text or "ic_meshcore" in text:
     raise SystemExit("plugin still references the vector icon path")
-body = text[text.index("public void onStart()"):text.index("public void onStop()")]
+onstart = text[text.index("public void onStart()"):text.index("public void onStop()")]
 for required in ("created.onCreate()", "new MeshcoreGattLink", "restoreSequence()", "catch (Throwable", "Log.e(TAG, \"onStart failed\""):
-    if required not in body:
+    if required not in onstart:
         raise SystemExit("onStart is missing " + required)
 stop = text[text.index("public void onStop()"):]
 if "radio != null" not in stop or "host != null" not in stop or "toolbarItem != null" not in stop:
@@ -37,10 +37,21 @@ start_body = link[link.index("public StartResult start("):link.index("public voi
 for needed, why in (
     ("machine.canStart()", "start() must refuse to touch a link in progress (B1)"),
     ("session.setWritesEnabled(true)", "start() must re-enable writes (B2)"),
-    ("getBondedDevices", "bonded device first (R4)"),
+    ("RadioChoice.plan(", "start() follows the saved-radio plan (E1)"),
 ):
-    if needed not in (start_body + link[link.index("private static List<BluetoothDevice> bondedMeshCore("):][:600]):
+    if needed not in start_body:
         raise SystemExit("MeshcoreGattLink: " + why)
+# E1: no automatic radio choice. The v7.1 shortcuts must be gone.
+for gone in ("earlyConnect", "bestMatch", "firstMatchMs", "bondedMeshCore("):
+    if gone in link.replace("private static List<BluetoothDevice> bondedMeshCore(", "", 1):
+        raise SystemExit("MeshcoreGattLink: automatic radio pick is back: " + gone)
+if "onChooseRadio(" not in link or "chooseRadio(" not in link or "cancelChoose(" not in link:
+    raise SystemExit("MeshcoreGattLink: the user must choose the radio (E1)")
+# E4: the next command follows the previous reply; the host tick is only a fallback.
+for needed in ("scheduleStep", "writeInFlight", "nextActionDelayMs"):
+    if needed not in link:
+        raise SystemExit("MeshcoreGattLink: missing E4 piece " + needed)
+
 for needed, why in (
     ("PHY_LE_1M_MASK, mainHandler", "connectGatt with the main handler (B5)"),
     ("session.peekWrite()", "frame leaves the queue only after the write is accepted (B3)"),
@@ -62,8 +73,12 @@ if "getConnectedDevices(BluetoothProfile.GATT)" not in held or "LinkRules.heldBy
     raise SystemExit("MeshcoreGattLink: held check must read getConnectedDevices(GATT) (C1)")
 cb = link[link.index("public void onCharacteristicWrite("):]
 cb = cb[:cb.index("private static byte[] copyOf")]
-if "LinkRules.writeFailureEndsAttempt(machine.state())" not in cb or '"write failed", status' not in cb:
-    raise SystemExit("MeshcoreGattLink: a failed write must end the attempt with its status (C2)")
+if "LinkRules.writeFailureEndsAttempt(machine.state())" not in cb or "writeFailure.begin(" not in cb:
+    raise SystemExit("MeshcoreGattLink: a failed write must end the attempt (C2/E5)")
+if '"write failed"' not in link and "resolveByTimeout" not in link:
+    raise SystemExit("MeshcoreGattLink: a failed write must end with its status (C2/E5)")
+if "resolveByDisconnect" not in link or "resolveByTimeout" not in link:
+    raise SystemExit("MeshcoreGattLink: failed write waits for the disconnect status (E5)")
 conn = body(link, "private void handleConnectionState(", "private void handleServices(")
 if "createBond()" not in conn or "getBondState()" not in conn[conn.index("createBond()"):] or "LinkRules.bondRefusalIsFatal(again)" not in conn:
     raise SystemExit("MeshcoreGattLink: createBond false must re-read the bond state (C4)")
@@ -72,6 +87,33 @@ if "LinkRules.mtuProblem(negotiated)" not in mtu or "failLink(now, problem" not 
     raise SystemExit("MeshcoreGattLink: MTU 23 must fail visibly (C5)")
 if "session.handshakeProgress()" not in link:
     raise SystemExit("MeshcoreGattLink: status line must show handshake progress (C6)")
+# v7.2 source rules (E2, E3, E9).
+if "getFilesDir" in text or "selectFirstTeamChannel" in text or "selectFirstTeamChannel" in link:
+    raise SystemExit("plugin must not use getFilesDir (E3) or pick a channel itself (E2)")
+if text.count("restoreSequence()") < 1 or "restoreSequence()" not in onstart:
+    raise SystemExit("onStart must restore the sequence (E3)")
+if 'BUILD_TAG = "v7.2"' not in text:
+    raise SystemExit("on-screen tag must be v7.2")
+root = java.parents[8]
+engine_src = (root / "src/main/java/dev/meshcore/atak/engine/Engine.java").read_text()
+if "selectFirstTeamChannel" in engine_src:
+    raise SystemExit("Engine must not auto-select a channel (E2)")
+# Opcode 3 (native channel text) is built in exactly one place, the opt-in native send path.
+users = []
+for path in sorted(list((root / "src/main").rglob("*.java")) + list((root / "app/src").rglob("*.java")) + list((root / "android").rglob("*.java"))):
+    t = path.read_text()
+    if "sendChannelText(" in t and path.name != "Companion.java":
+        users.append(path.name)
+if users != ["Engine.java"]:
+    raise SystemExit("sendChannelText must be called only from Engine: " + str(users))
+if engine_src.count("Companion.sendChannelText(") != 1:
+    raise SystemExit("Engine must build native text in exactly one place")
+native = engine_src[engine_src.index("public Send sendNativeChannelText("):engine_src.index("private Send refuseUnsafeChannel(")]
+for needed in ("refuseUnsafeChannel()", "maxNativeTextBytes", "tooLong"):
+    if needed not in native:
+        raise SystemExit("native send path is missing " + needed)
+if "boolean pluginOnlyChat = true;" not in engine_src:
+    raise SystemExit("the Plugin users only switch must default to ON")
 manifest_text = manifest.read_text()
 if "@mipmap/ic_launcher" not in manifest_text or "ic_meshcore" in manifest_text:
     raise SystemExit("manifest icon is not the png mipmap")
