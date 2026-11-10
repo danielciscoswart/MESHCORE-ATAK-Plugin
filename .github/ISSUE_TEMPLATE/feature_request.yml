@@ -1,0 +1,23 @@
+name: Feature request
+description: Suggest a change or addition
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is a small project with no support promises. Please do not include channel keys, PINs, or private message text.
+  - type: textarea
+    id: what
+    attributes:
+      label: What would you like the plugin to do?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why does it matter for your use?
+  - type: textarea
+    id: limits
+    attributes:
+      label: Anything this might conflict with
+      description: For example the radio's 165-byte group data limit, or the rule that only the plugin's own chat room may transmit.

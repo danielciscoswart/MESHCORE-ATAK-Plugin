@@ -1,6 +1,6 @@
 # ATAK API lookup for the local 5.6.0.26 SDK
 
-This environment did not have the ATAK-CIV SDK. Nothing under `atak-plugin/` was compiled against it. The parent compile is the check. If a symbol below is missing or has a different signature in the 5.6.0.26 javadoc, stop and change only that call. Do not add a stub jar.
+This environment did not have the ATAK-CIV SDK. Nothing under `app/` was compiled against it. The parent compile is the check. If a symbol below is missing or has a different signature in the 5.6.0.26 javadoc, stop and change only that call. Do not add a stub jar.
 
 Archive filename observed on the parent box: `5.6.0.26`. This repository does not assert a commit or hash inside that archive. A public third-party note mentions an internal changelog line `5.6.0.25` / `SDK238484e`. That was not in the SDK here, so it is not confirmed.
 

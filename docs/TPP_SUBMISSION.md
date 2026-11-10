@@ -1,5 +1,7 @@
 # TAK third-party pipeline source package
 
+> **Historical record.** These notes were written before the first plugin build loaded in ATAK, so statements such as "has not been assembled" or "not loaded" describe that moment and are out of date. Later builds loaded in ATAK-CIV 5.6.0.12. See `CHANGELOG.md` for version history. The pipeline rules summarized here are from tak.gov and may have changed, so check the current pipeline page.
+
 Nothing in this repository has been uploaded or submitted. Signing is not configured. The last APK that was actually built is the unsigned release of commit `856a81d`, recorded in `docs/BUILD_PROVENANCE.md`. Later commits change the Gradle project and have not been assembled. Each export writes `SOURCE_REVISION.txt` with the git commit. The zip hash is printed beside the archive and is not inside it.
 
 ## Which versions this tree follows

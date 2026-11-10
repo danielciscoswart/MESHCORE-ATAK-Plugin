@@ -10,3 +10,20 @@ sdk/
 sdk-*/
 .gradle/
 app/build/
+
+# ATAK SDK files, signing material, and builds must never be committed
+.takdev/
+*.jks
+*.pem
+*.p12
+*.aar
+*.aab
+mapping.txt
+main.jar
+atak-gradle-takdev.jar
+atak-javadoc.jar
+ATAK-CIV-*.zip
+*SDK*.zip
+pluginsdk.zip
+.idea/
+*.iml

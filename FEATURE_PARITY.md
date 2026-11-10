@@ -1,5 +1,7 @@
 # Feature parity
 
+> **Partly out of date.** This table was written for the early 0.2 design. Statements such as "not compiled", "no APK", and "unverified in ATAK" predate version 0.7.5, which was built by the TAK Third Party Pipeline and tried by one developer on one phone and one radio. It is still a useful list of what the code does and does not support. `README.md` has the current status and `CHANGELOG.md` has the history.
+
 Parity target: the **Meshtastic ATAK plugin** described at
 <https://meshtastic.org/docs/software/integrations/integrations-atak-plugin/>
 and in `meshtastic/ATAK-Plugin` `README.md` at commit `784530f` (2026-06-04).
@@ -61,7 +63,7 @@ No row is field-verified. "Tests" means `./scripts/test.sh` only.
 | App-layer AES-GCM | Optional PSK | ENC bit with no key is dropped and counted. PBKDF2 and GCM are not implemented | partial | `malformed` |
 | Channel key as authentication | Meshtastic channel PSK is also not a signature | Documented non-goal. CoT carries `__meshcore unverified="true"` | implemented as a warning, not a defense | `pliBytes`, `radios` |
 | iPhone / iTAK | Separate Meshtastic apps | No | not-supported | — |
-| ATAK plugin UI, tool menu, preferences screen | Yes | `atak-plugin/` has manifest discovery, `IPlugin` lifecycle, a pane, and internal CoT publish. Not compiled against the 5.6.0.26 SDK and not loaded into ATAK. `PluginHost` remains the tested in-memory model | partial, source only, unverified in ATAK | `plugin lifecycle contacts chat markers`; SDK compile not run |
+| ATAK plugin UI, tool menu, preferences screen | Yes | `app/` has manifest discovery, `IPlugin` lifecycle, a pane, and internal CoT publish. Not compiled against the 5.6.0.26 SDK and not loaded into ATAK. `PluginHost` remains the tested in-memory model | partial, source only, unverified in ATAK | `plugin lifecycle contacts chat markers`; SDK compile not run |
 | Retail or debug APK | Published releases | Not built | not-supported in this tree | — |
 
 ## Deliberate non-goals

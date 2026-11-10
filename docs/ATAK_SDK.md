@@ -7,7 +7,7 @@ Candidate baseline: **ATAK-CIV 5.6.x**. Public notes used to pick it:
 
 The ATAK-CIV plugin SDK is not a public Maven artifact. A 5.6.0.26 archive is on the maintainer's machine and was not copied here. The TAK software license reviewed with that archive allows use and derived applications and prohibits copying, publishing, or reverse engineering the SDK. This tree does not contain `main.jar`, takdev, samples, docs from the archive, or `android_keystore`.
 
-`atak-plugin/` is original source that *references* a local SDK path. It was not compiled. `docs/ATAK_API_LOOKUP.md` lists every ATAK call and the public file it was read from. A missing symbol on 5.6.0.26 is a parent lookup, not a stub.
+`app/` is original source that *references* a local SDK path. It was not compiled. `docs/ATAK_API_LOOKUP.md` lists every ATAK call and the public file it was read from. A missing symbol on 5.6.0.26 is a parent lookup, not a stub.
 
 What is compiled here instead:
 

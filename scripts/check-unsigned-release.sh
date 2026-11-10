@@ -6,7 +6,7 @@
 # is not searched as plain text. If aapt2 is missing, this exits 1.
 set -euo pipefail
 
-APK="${1:-atak-plugin/app/build/outputs/apk/release/app-release-unsigned.apk}"
+APK="${1:-app/build/outputs/apk/civ/release/app-civ-release-unsigned.apk}"
 PACKAGE_NAME="dev.meshcore.atak.plugin"
 PLUGIN_CLASS="dev.meshcore.atak.host.MeshCoreAtakPlugin"
 PLUGIN_API="com.atakmap.app@5.6.0.CIV"

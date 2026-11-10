@@ -13,7 +13,7 @@ Observed from the parent review of archive filename `5.6.0.26`, not from an SDK 
 | Android Gradle Plugin | 8.13.0 |
 | compileSdk | 36 |
 | minSdk | 21 |
-| targetSdk | 36 (see the note in `atak-plugin/app/build.gradle`) |
+| targetSdk | 36 (see the note in `app/build.gradle`) |
 | Java source/target | 1.8 |
 | takdev | 3+ , taken from the local jar, not from TAK maven |
 | NDK `27.2.12479018` | not used; this plugin has no native code |
@@ -29,7 +29,7 @@ Do not copy those into this tree.
 
 ## Steps
 
-1. Unpack the source zip (or use this git checkout) so `atak-plugin/settings.gradle` is at the project root of that directory.
+1. Unpack the source zip (or use this git checkout) so `settings.gradle` is at the project root of that directory.
 2. Install JDK 17 and the public Android SDK with platform 36. That Android SDK is not the ATAK SDK.
 3. Copy `local.properties.example` to `local.properties` beside `gradlew`.
 4. Set absolute paths:

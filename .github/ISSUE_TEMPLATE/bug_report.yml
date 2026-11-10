@@ -1,0 +1,51 @@
+name: Bug report
+description: Something does not work as the README says
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Do not paste channel keys, QR codes, Bluetooth PINs, radio dumps, or message text you want kept private.** Read any COPY DIAG output before you paste it. For security problems, do not use this form. See SECURITY.md.
+  - type: input
+    id: plugin
+    attributes:
+      label: Plugin version
+      description: The status line in the plugin pane starts with it, for example "v7.5 |".
+    validations:
+      required: true
+  - type: input
+    id: atak
+    attributes:
+      label: ATAK-CIV version and where you got it
+      placeholder: "5.6.0.12, Play Store"
+    validations:
+      required: true
+  - type: input
+    id: phone
+    attributes:
+      label: Phone model and Android version
+    validations:
+      required: true
+  - type: input
+    id: radio
+    attributes:
+      label: Radio board and MeshCore firmware version
+      placeholder: "Heltec V4, companion v1.18.0"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+  - type: textarea
+    id: diag
+    attributes:
+      label: COPY DIAG output (optional)
+      description: Read it first and remove anything you do not want public.
+      render: text

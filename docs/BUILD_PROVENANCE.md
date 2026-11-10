@@ -1,5 +1,7 @@
 # Build provenance
 
+> **Historical record.** These notes describe early builds (0.2-source and the first pipeline builds) under an older folder layout (`atak-plugin/`, now `app/`). They are kept for provenance and are not current build instructions. See `README.md` and `docs/LOCAL_BUILD.md` for current steps and `CHANGELOG.md` for version history.
+
 This file records commands that were actually run. A successful Java compile is not ATAK load, retail signing, BLE, or a radio test.
 
 ## Debug compile of commit `b4d9f5e`
