@@ -21,11 +21,11 @@ Do not rely on this plugin for emergency communication, navigation, or anything 
 - Lets you choose one private channel on the radio. You choose the channel too.
 - Adds one chat room to ATAK's chat list for that channel. What you type in that room goes to the radio. Messages from that channel show up in the same room.
 - Offers two send modes, with a switch in the plugin pane:
-  - **Plugin users only** (the default). Sends compact binary data that only other copies of this plugin can read. The MeshCore app will not show these messages.
+  - **Plugin users only** (the default). Sends compact data that the MeshCore app does not show. Anyone who has the channel key can still read it, and other programs that understand the MCTAK v0.1 format can decode it.
   - **MeshCore text.** Sends a normal MeshCore channel text message that the MeshCore app can show.
-- Once a channel is chosen, reads the radio's whole waiting-message queue, and again whenever a new message arrives, so messages that came in while the phone was away show up in order. Before you choose a channel it reads nothing and leaves messages on the radio.
-- Can share your position as a Cursor on Target (CoT) report, only after you tap "Send my position".
-- Has a COPY DIAG button that copies a diagnostic summary for bug reports. It does not include keys, PINs, or message text.
+- Once a channel is chosen, reads the radio's whole waiting-message queue, and again whenever a new message arrives, so messages that came in while the phone was away show up in order. Before you choose a channel it does not read waiting messages, so they stay on the radio. (It does read the radio's device info, channel list, and stats at connect.)
+- Can share your position as a Cursor on Target (CoT) report. It is off until you tap "Send my position" and confirm a dialog that names the channel. After that it keeps sending, about every 5 minutes while the phone has a position fix, until you tap "Stop sending position". Changing the radio or channel, or losing the link, also turns it off, and you have to opt in again. It is not a one-time send. Anyone who has the channel key can see where you are.
+- Has a COPY DIAG button that copies a diagnostic summary for bug reports. It does not include channel keys, PINs, or message text. It does include other details about your setup, listed under [What COPY DIAG includes](#what-copy-diag-includes). Check it before you share it publicly.
 
 The wire format follows the published MCTAK v0.1 datagram layout, so short messages can interoperate with other implementations of that format. `FEATURE_PARITY.md` lists what is implemented, partial, and not supported.
 
@@ -35,7 +35,7 @@ The wire format follows the published MCTAK v0.1 datagram layout, so short messa
 - **Reading a message takes it off the radio.** When the plugin reads a message from the radio's queue, the MeshCore app on that same radio cannot get it afterward. This includes messages on the Public channel, which the plugin reads and shows only in its pane. If you want to read everything in the MeshCore app, use a different radio for ATAK.
 - **Messages are unverified.** A channel key shows that someone has the key. It does not prove who sent a message. Anyone with the key can pretend to be anyone else. Inbound messages are marked unverified in ATAK.
 - **Backlog timestamps show display time.** A message that waited in the radio's queue is stamped with the time it appeared on the phone, not the time it was sent.
-- **Messages are short.** The firmware accepts at most 165 bytes of group data, so voice, images, file transfer, and long messages are not supported.
+- **Messages are short.** A MeshCore text message is limited to about 150 characters (the exact limit gets smaller as the sender name gets longer), and the firmware accepts at most 165 bytes of group data in any mode. Voice, images, file transfer, and long messages are not supported.
 - **Only the plugin's own chat room can transmit.** Every other ATAK chat is ignored.
 - The radio holds up to 256 waiting messages on the Heltec V4. If it fills up, the radio drops its oldest channel message.
 
@@ -46,7 +46,7 @@ The easy way is the APK on the [GitHub Releases page](../../releases). It is sig
 1. Download the APK from the release for version 0.7.5 and check its SHA-256 against the value in the release notes and in `CHANGELOG.md`.
 2. Install it on the phone. Android will ask you to allow installs from the app you used to open the file.
 3. Open ATAK and load **MeshCore ATAK** from its plugin list (Package Management). If the status line at the top of the plugin pane starts with `v7.5 |`, you have this version.
-4. Pair the radio in Android's Bluetooth settings first, and close any other app that is connected to the radio. The plugin will not connect to a radio another app already holds.
+4. If Android asks for the radio's PIN, enter it on the phone. Close any other app that is connected to the radio. The plugin will not connect to a radio another app already holds.
 5. Open the plugin pane, tap CONNECT, choose your radio, then choose a private channel.
 
 A plugin built any other way (an unsigned or SDK debug build) will not load in Play Store ATAK.
@@ -83,17 +83,35 @@ MESHCORE_TAK_FIXTURES=/path/to/meshcore-TAK/docs/payload-spec-fixtures \
 
 **Build a signed APK through the TAK Third Party Pipeline.** Retail ATAK only loads plugins signed by TAK. The pipeline takes one source ZIP with a single root folder, the Gradle wrapper, and the `assembleCivRelease` target. Details are on the pipeline page at tak.gov after you log in and accept its terms. Do not put `local.properties`, keys, SDK files, or build output in the ZIP. After a build, run `scripts/check-ctor-mapped.sh` on the returned APK. It must print PASS. It cannot pass on a local build, by design. `docs/TPP_SUBMISSION.md` has the notes.
 
+## What COPY DIAG includes
+
+COPY DIAG copies text to the clipboard and sends it nowhere. It is built from the plugin's diagnostic code. It leaves out channel keys, the radio's Bluetooth PIN, frame bytes, and message text. It does include:
+
+- **Plugin and phone:** the plugin build tag, Android version and SDK number, the phone model, the ATAK package name and version.
+- **Chat room:** whether the plugin's room exists, and its title, which contains the chosen channel's name and the send mode. Counters for room, push, receipt, and native-text events.
+- **Link:** connection state and any failure stage, reason, and Bluetooth status code. The radio's Bluetooth name, with the last two bytes of its address, for the target and saved radio. Whether Bluetooth and location are on, and which Bluetooth permissions are granted.
+- **Nearby Bluetooth:** every paired MeshCore device (name, last two address bytes, bond state), the MeshCore devices that are currently connected, and up to 10 devices seen in the last scan with their names, last two address bytes, signal strength, and whether they are paired. The scan list can include names of unrelated devices near you.
+- **Connection history and trace:** time-stamped connection stages, the MTU, and a trace of the command numbers and lengths written to the radio (not their contents).
+- **Channels:** the number of channels in use, the selected channel, and for each channel its slot number, name, a short fingerprint of its key, and whether the plugin allows sending on it.
+- **Messages:** counts of received frames, a note on the last received text with its channel, path length, and size, and a list of recent received messages with sender timestamp, path length, size, and a 16-bit hash of the text (enough to tell whether two copies match, not enough to recover the text).
+- **Queue reading:** the state and counters of the radio queue read.
+- **Radio:** its uptime, battery voltage, error flags, queue length, and whether a reboot was seen.
+- **Storage and screen:** whether saving settings worked, and the plugin pane's measurements in dp.
+- **Counters:** the full list of internal event counters (numbers only).
+
+It can therefore show your radio's name, your channel's name, your phone model, and the names of nearby Bluetooth devices. Check it before you share it publicly.
+
 ## Privacy and safety defaults
 
 - **Sharing your position is off until you tap "Send my position".** Connecting does not send position.
-- **Chat sending is opt-in.** The plugin sends nothing until you choose a radio and a channel and type a message in its room. Automatic delivery receipts are off, so the radio never transmits anything you did not type.
+- **Chat sending is opt-in.** The plugin sends nothing until you choose a radio and a channel and type a message in its room. Automatic delivery receipts are off. The plugin never sends a chat message you did not type. It sends your position only after you tap "Send my position" (see above). The radio itself may still send its own announcements, which the plugin does not control.
 - **The plugin never logs channel keys or message text.** It records only a channel's number, its name, and a short fingerprint of its key. It does not keep the key and does not log the radio's Bluetooth PIN.
 - Chat in the MeshCore room is saved in ATAK's own chat history on the phone, like any ATAK chat. Removing the room does not delete that history.
 - Messages sent on a channel can be read by everyone who has that channel's key, and by anyone who can receive the radio signal and get the key.
 
 ## Not affiliated
 
-This is an independent project. It is not affiliated with, endorsed by, or sponsored by the TAK Product Center, the U.S. Government, or the MeshCore project. ATAK and TAK are marks of their owners (ATAK is a mark of the U.S. Air Force). MeshCore is a separate project. These names are used only to describe what this plugin works with.
+This is an independent project. It is not affiliated with, endorsed by, or sponsored by the TAK Product Center, the U.S. Government, or the MeshCore project. ATAK and TAK are marks of their respective owners. MeshCore is a separate project. These names are used only to describe what this plugin works with.
 
 ## Acknowledgements
 
@@ -102,7 +120,7 @@ This is an independent project. It is not affiliated with, endorsed by, or spons
 
 ## Contributing and security
 
-See `CONTRIBUTING.md`. To report a security problem, see `SECURITY.md`. Release history is in `CHANGELOG.md`.
+See `CONTRIBUTING.md`, and `docs/DESIGN.md` for the reasons behind a few behaviors that are easy to break. To report a security problem, see `SECURITY.md`. Release history is in `CHANGELOG.md`.
 
 ## License
 
