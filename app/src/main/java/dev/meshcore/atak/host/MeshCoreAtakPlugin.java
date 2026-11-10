@@ -1,6 +1,9 @@
 package dev.meshcore.atak.host;
 
+import android.app.Activity;
 import android.content.Context;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -13,6 +16,7 @@ import android.widget.TextView;
 
 import com.atak.plugins.impl.PluginContextProvider;
 import com.atak.plugins.impl.PluginLayoutInflater;
+import com.atakmap.android.maps.MapView;
 import com.atakmap.comms.CommsMapComponent;
 
 import java.util.List;
@@ -49,6 +53,7 @@ public final class MeshCoreAtakPlugin implements IPlugin {
     private Pane pane;
     private TextView status;
     private boolean running;
+    private boolean linkWanted;
     private boolean locationOptIn;
     private boolean watchGeoChat;
     private boolean watchRegistered;
@@ -74,6 +79,15 @@ public final class MeshCoreAtakPlugin implements IPlugin {
                     host.engine().beacon(now);
                 }
                 drainWatchedChat(now);
+                if (radio != null) {
+                    // Without flush, GATT never writes companion handshake frames.
+                    radio.flush(now);
+                    // Only auto-reconnect after the user tapped CONNECT (linkWanted).
+                    // Otherwise plugin start would BLE-scan with no user action.
+                    if (linkWanted && host.session().reconnectDue(now)) {
+                        radio.start(pluginContext, now);
+                    }
+                }
                 String transport = host.engine().transportStatus();
                 if (transport != null) {
                     lastChatStatus = transport;
@@ -144,6 +158,7 @@ public final class MeshCoreAtakPlugin implements IPlugin {
     public void onStop() {
         Log.d(TAG, "onStop");
         running = false;
+        linkWanted = false;
         handler.removeCallbacks(tick);
         try {
             setWatchGeoChat(false);
@@ -275,10 +290,15 @@ public final class MeshCoreAtakPlugin implements IPlugin {
                 @Override
                 public void onClick(View view) {
                     if (host == null || radio == null) {
+                        startupError = startupError == null ? "not started" : startupError;
+                        showStatus();
                         return;
                     }
                     host.onStart();
-                    radio.start(pluginContext, System.currentTimeMillis());
+                    linkWanted = true;
+                    maybeRequestBlePermissions();
+                    boolean started = radio.start(pluginContext, System.currentTimeMillis());
+                    Log.d(TAG, "connect tap started=" + started + " block=" + radio.block());
                     showStatus();
                 }
             });
@@ -317,6 +337,7 @@ public final class MeshCoreAtakPlugin implements IPlugin {
             disconnect.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View view) {
+                    linkWanted = false;
                     if (radio != null) {
                         radio.stop();
                     }
@@ -348,6 +369,7 @@ public final class MeshCoreAtakPlugin implements IPlugin {
         }
         Engine engine = host.engine();
         String block = radio.block();
+        MeshcoreGattLink.PermissionReport perms = MeshcoreGattLink.permissions(pluginContext);
         status.setText("link " + engine.link()
                 + " sessionReady=" + host.session().ready()
                 + " channel=" + engine.hasSelectedChannel()
@@ -355,9 +377,70 @@ public final class MeshCoreAtakPlugin implements IPlugin {
                 + " queued=" + engine.queued()
                 + " lastChat=" + lastChatStatus
                 + " watchGeoChat=" + watchGeoChat
+                + "\nperms " + perms.detail(Build.VERSION.SDK_INT)
                 + "\nInbound traffic is unverified. Fragments over 165 bytes are not sent."
                 + "\nA contact UID is not a private radio destination."
                 + "\n" + block);
+    }
+
+    /**
+     * ATAK plugins have no Activity of their own. Runtime Nearby-devices grants
+     * belong to the ATAK host process UID. Ask the MapActivity when possible;
+     * otherwise the status line tells the user to grant it in Settings.
+     */
+    private void maybeRequestBlePermissions() {
+        if (Build.VERSION.SDK_INT < 31 || pluginContext == null) {
+            return;
+        }
+        MeshcoreGattLink.PermissionReport report = MeshcoreGattLink.permissions(pluginContext);
+        if (report.canLink(Build.VERSION.SDK_INT)) {
+            return;
+        }
+        Activity activity = findHostActivity();
+        if (activity == null) {
+            Log.e(TAG, "no host Activity to request BLE permissions");
+            return;
+        }
+        try {
+            java.util.ArrayList<String> needed = new java.util.ArrayList<String>();
+            if (activity.checkSelfPermission("android.permission.BLUETOOTH_SCAN")
+                    != PackageManager.PERMISSION_GRANTED) {
+                needed.add("android.permission.BLUETOOTH_SCAN");
+            }
+            if (activity.checkSelfPermission("android.permission.BLUETOOTH_CONNECT")
+                    != PackageManager.PERMISSION_GRANTED) {
+                needed.add("android.permission.BLUETOOTH_CONNECT");
+            }
+            if (needed.isEmpty()) {
+                return;
+            }
+            activity.requestPermissions(needed.toArray(new String[0]), 56012);
+            Log.d(TAG, "requested BLE permissions count=" + needed.size());
+        } catch (Throwable t) {
+            Log.e(TAG, "BLE permission request failed", t);
+        }
+    }
+
+    private Activity findHostActivity() {
+        try {
+            MapView mapView = MapView.getMapView();
+            if (mapView != null) {
+                Context ctx = mapView.getContext();
+                if (ctx instanceof Activity) {
+                    return (Activity) ctx;
+                }
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "MapView activity lookup failed", t);
+        }
+        Context ctx = pluginContext;
+        while (ctx instanceof android.content.ContextWrapper) {
+            if (ctx instanceof Activity) {
+                return (Activity) ctx;
+            }
+            ctx = ((android.content.ContextWrapper) ctx).getBaseContext();
+        }
+        return null;
     }
 
     private void restoreSequence() {

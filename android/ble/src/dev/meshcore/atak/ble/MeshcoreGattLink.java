@@ -60,13 +60,29 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
             }
             return legacyLocation;
         }
+
+        public String detail(int sdkInt) {
+            if (sdkInt >= 31) {
+                return "btConnect=" + connect + " btScan=" + scan;
+            }
+            return "fineLocation=" + legacyLocation;
+        }
     }
 
     private final RadioSession session;
+    private static final long SCAN_TIMEOUT_MS = 15_000L;
+
     private final ScanCallback scans = new ScanCallback() {
         @Override
         public void onScanResult(int callbackType, ScanResult result) {
             onFound(result);
+        }
+
+        @Override
+        public void onScanFailed(int errorCode) {
+            scanning = false;
+            scanDeadlineMs = 0L;
+            block = "scan_failed_" + errorCode;
         }
     };
 
@@ -76,6 +92,8 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
     private BluetoothGattCharacteristic rx;
     private BluetoothGattCharacteristic tx;
     private boolean scanning;
+    private long scanDeadlineMs;
+    private long scanRestartNotBeforeMs;
     private String block = "idle";
 
     public MeshcoreGattLink(RadioSession session) {
@@ -107,12 +125,13 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
     public boolean start(Context context, long nowMs) {
         PermissionReport report = permissions(context);
         if (!report.canLink(Build.VERSION.SDK_INT)) {
-            block = "permission";
+            block = "permission " + report.detail(Build.VERSION.SDK_INT)
+                    + " (grant Nearby devices to ATAK in Settings)";
             return false;
         }
         BluetoothManager manager = (BluetoothManager) context.getSystemService(Context.BLUETOOTH_SERVICE);
         if (manager == null || manager.getAdapter() == null || !manager.getAdapter().isEnabled()) {
-            block = "adapter";
+            block = "adapter_off";
             return false;
         }
         BluetoothLeScanner found = manager.getAdapter().getBluetoothLeScanner();
@@ -120,8 +139,32 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
             block = "scanner";
             return false;
         }
+        // Already searching: keep the deadline. A second CONNECT tap used to
+        // hit ALREADY_STARTED and look like a no-op; status already says scanning.
+        if (scanning) {
+            return true;
+        }
+        if (nowMs < scanRestartNotBeforeMs) {
+            return false;
+        }
+        // Drop a stale GATT left after disconnect so auto-reconnect can scan.
+        if (gatt != null) {
+            BluetoothGatt stale = gatt;
+            gatt = null;
+            rx = null;
+            tx = null;
+            try {
+                stale.disconnect();
+                stale.close();
+            } catch (SecurityException ex) {
+                block = "security";
+                return false;
+            }
+        }
         this.appContext = context.getApplicationContext();
         this.scanner = found;
+        // Official companion advertises Nordic UART service UUID only.
+        // No name filter: firmware uses BLE_NAME_PREFIX + node name (often MeshCore-...).
         ScanFilter filter = new ScanFilter.Builder()
                 .setServiceUuid(new ParcelUuid(UUID.fromString(RadioLimits.SERVICE_UUID)))
                 .build();
@@ -132,9 +175,14 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
         } catch (SecurityException ex) {
             block = "security";
             return false;
+        } catch (IllegalArgumentException ex) {
+            block = "scan_bad_args";
+            return false;
         }
         scanning = true;
-        block = "scanning";
+        scanDeadlineMs = nowMs + SCAN_TIMEOUT_MS;
+        scanRestartNotBeforeMs = 0L;
+        block = "scanning uuid=" + RadioLimits.SERVICE_UUID.substring(0, 8);
         return true;
     }
 
@@ -160,6 +208,12 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
     /** Let the session advance, then hand at most one frame to the RX characteristic. */
     @SuppressLint("MissingPermission")
     public void flush(long nowMs) {
+        if (scanning && scanDeadlineMs > 0L && nowMs >= scanDeadlineMs) {
+            stopScan();
+            // Back off so the 1s host tick does not restart scan immediately.
+            scanRestartNotBeforeMs = nowMs + 5_000L;
+            block = "scan_timeout (no MeshCore companion advert; close MeshCore app, confirm Companion BLE firmware)";
+        }
         session.tick(nowMs);
         byte[] frame = session.pollWrite();
         BluetoothGatt open = gatt;
@@ -219,6 +273,18 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
         if (newState == BluetoothProfile.STATE_DISCONNECTED) {
             session.onDisconnected(now);
             block = "disconnected";
+            // Release the client so a later start() can scan again. Leaving
+            // gatt set made reconnectDue report already_connected forever.
+            if (this.gatt == gatt) {
+                this.gatt = null;
+                rx = null;
+                tx = null;
+            }
+            try {
+                gatt.close();
+            } catch (SecurityException ex) {
+                block = "security";
+            }
         }
     }
 
@@ -304,6 +370,7 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
 
     @SuppressLint("MissingPermission")
     private void stopScan() {
+        scanDeadlineMs = 0L;
         if (!scanning || scanner == null) {
             scanning = false;
             return;
@@ -312,6 +379,8 @@ public final class MeshcoreGattLink extends BluetoothGattCallback {
             scanner.stopScan(scans);
         } catch (SecurityException ex) {
             block = "security";
+        } catch (IllegalArgumentException ignored) {
+            // callback already gone
         }
         scanning = false;
     }
