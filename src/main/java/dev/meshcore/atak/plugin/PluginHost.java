@@ -2,6 +2,7 @@ package dev.meshcore.atak.plugin;
 
 import dev.meshcore.atak.cot.Cot;
 import dev.meshcore.atak.engine.Engine;
+import dev.meshcore.atak.engine.SendReasons;
 import dev.meshcore.atak.mctak.Mctak;
 import dev.meshcore.atak.transport.RadioSession;
 
@@ -72,6 +73,7 @@ public final class PluginHost {
     private final List<ChatLine> chats = new ArrayList<>();
     private final List<Marker> markers = new ArrayList<>();
     private Life life = Life.NEW;
+    private String lastWhy = "";
 
     public PluginHost() {
         this.engine = new Engine();
@@ -146,10 +148,13 @@ public final class PluginHost {
      * Waypoints are remembered and not transmitted.
      */
     public String offerOutboundCot(String cot, long nowMs) {
+        lastWhy = "";
         if (life != Life.STARTED) {
+            lastWhy = SendReasons.STOPPED;
             return "STOPPED";
         }
         if (cot == null || cot.length() > COT_CAP) {
+            lastWhy = "Not sent: message could not be read";
             return "REFUSED";
         }
         if (Cot.hasMeshcoreLoopMarker(cot)) {
@@ -230,10 +235,21 @@ public final class PluginHost {
                 scope = Mctak.SCOPE_DIRECT;
                 roomName = "";
             } catch (NumberFormatException ex) {
+                lastWhy = "Not sent: unknown chat room id";
                 return "REFUSED";
             }
         }
-        return engine.sendChat(scope, dest, roomName, text, nowMs).status;
+        Engine.Send send = engine.sendChat(scope, dest, roomName, text, nowMs);
+        lastWhy = send.why;
+        return send.status;
+    }
+
+    /**
+     * E10: why the last {@link #offerOutboundCot} sent nothing, or "" when it was
+     * queued or was not a send at all. Never contains message text.
+     */
+    public String lastWhy() {
+        return lastWhy;
     }
 
     private void rememberMarker(String cot) {

@@ -36,6 +36,8 @@ public final class RadioSession {
     private boolean handshakeFailed;
     private boolean syncWanted;
     private boolean mtuLatched;
+    private boolean statsWanted;
+    private long lastNotificationMs;
     private int mtu;
     private int handshakeRetries;
     private int tableFullRetries;
@@ -138,6 +140,8 @@ public final class RadioSession {
         channelCursor = 0;
         inflight = null;
         retryHold = null;
+        statsWanted = false;
+        lastNotificationMs = 0L;
         engine.onLinkUp(nowMs);
         note("connected");
     }
@@ -156,6 +160,7 @@ public final class RadioSession {
         phase = Phase.NEED_APP;
         handshakeFailed = false;
         handshakeRetries = 0;
+        statsWanted = false;
         int shift = Math.min(5, Math.max(0, backoffStep));
         long delay = Math.min(30_000L, 1000L << shift);
         backoffStep = Math.min(5, backoffStep + 1);
@@ -185,6 +190,7 @@ public final class RadioSession {
             note("reject len=" + (frame == null ? -1 : frame.length));
             return;
         }
+        lastNotificationMs = nowMs;
         int type = frame[0] & 0xFF;
         if (type == Companion.PACKET_DEVICE_INFO) {
             frame = wipePin(frame);
@@ -201,12 +207,12 @@ public final class RadioSession {
         }
         if (inflight != null && matches(inflight[0] & 0xFF, type)) {
             byte[] cmd = inflight;
-            if ((cmd[0] & 0xFF) == Companion.CMD_SYNC_NEXT && Companion.isNativeText(type)) {
-                engine.counters().inc("native_text_unsupported");
-                engine.noteTransportStatus("NATIVE_TEXT_UNSUPPORTED");
-            }
             inflight = null;
             tableFullRetries = 0;
+            if ((cmd[0] & 0xFF) == Companion.CMD_SEND_CHANNEL_DATA
+                    || (cmd[0] & 0xFF) == Companion.CMD_SEND_CHANNEL_TXT) {
+                engine.onChannelDataReply(0);
+            }
             noteSuccess(cmd, frame);
             engine.receiveFrame(frame, nowMs);
             return;
@@ -218,7 +224,10 @@ public final class RadioSession {
             engine.counters().inc("radio_error");
             note("error " + code);
             int cmdByte = cmd[0] & 0xFF;
-            if (code != RadioLimits.ERR_TABLE_FULL) {
+            if (cmdByte == Companion.CMD_GET_STATS) {
+                // Read-only diagnostics. An old firmware may refuse it. Not a transport failure.
+                engine.counters().inc("stats_unavailable");
+            } else if (code != RadioLimits.ERR_TABLE_FULL) {
                 engine.noteTransportStatus("RADIO_ERROR_" + code);
             }
             if (cmdByte == Companion.CMD_SEND_CHANNEL_DATA && code == RadioLimits.ERR_TABLE_FULL
@@ -229,6 +238,9 @@ public final class RadioSession {
                 return;
             }
             tableFullRetries = 0;
+            if (cmdByte == Companion.CMD_SEND_CHANNEL_DATA || cmdByte == Companion.CMD_SEND_CHANNEL_TXT) {
+                engine.onChannelDataReply(code < 0 ? -2 : code);
+            }
             if (cmdByte == Companion.CMD_SEND_CHANNEL_DATA && code == RadioLimits.ERR_TABLE_FULL) {
                 engine.noteTransportStatus("RADIO_ERROR_" + code);
             }
@@ -240,12 +252,32 @@ public final class RadioSession {
             engine.receiveFrame(frame, nowMs);
             return;
         }
-        if (Companion.isNativeText(type)) {
-            engine.counters().inc("native_text_unsupported");
-            engine.noteTransportStatus("NATIVE_TEXT_UNSUPPORTED");
+        // Native text is kept and shown by the engine (E8); it is not an unexpected frame.
+        if (!Companion.isNativeText(type)) {
+            engine.counters().inc("unexpected_response");
         }
-        engine.counters().inc("unexpected_response");
         engine.receiveFrame(frame, nowMs);
+    }
+
+    /** When the last frame arrived from the radio, or 0 when none has on this link (E5). */
+    public synchronized long lastNotificationMs() {
+        return lastNotificationMs;
+    }
+
+    /**
+     * E4: how long until {@link #tick} could write the next command. 0 means now.
+     * -1 means nothing can be written until something else happens: a reply is
+     * awaited, a frame is already queued for the GATT write, or the link is not up.
+     * The Android adapter calls this after every notification and every completed
+     * write, so the next frame goes out as soon as the 60 ms gap allows. The 1 s
+     * host tick stays as a fallback.
+     */
+    public synchronized long nextActionDelayMs(long nowMs) {
+        if (!connected || !notifications || !writesEnabled || inflight != null || !outbox.isEmpty()) {
+            return -1L;
+        }
+        long wait = lastWriteMs + RadioLimits.WRITE_GAP_MS - nowMs;
+        return wait <= 0L ? 0L : wait;
     }
 
     public synchronized void tick(long nowMs) {
@@ -259,8 +291,9 @@ public final class RadioSession {
                 engine.counters().inc("command_timeout");
                 note("timeout " + (lost[0] & 0xFF));
                 int cmd = lost[0] & 0xFF;
-                if (cmd == Companion.CMD_SEND_CHANNEL_DATA) {
+                if (cmd == Companion.CMD_SEND_CHANNEL_DATA || cmd == Companion.CMD_SEND_CHANNEL_TXT) {
                     engine.noteTransportStatus("SEND_TIMEOUT");
+                    engine.onChannelDataReply(-1);
                 }
                 if (cmd == Companion.CMD_APP_START || cmd == Companion.CMD_DEVICE_QUERY
                         || cmd == Companion.CMD_GET_CHANNEL) {
@@ -367,6 +400,10 @@ public final class RadioSession {
             }
             becomeReady();
         }
+        if (statsWanted) {
+            statsWanted = false;
+            return Companion.getStatsCore();
+        }
         if (syncWanted) {
             syncWanted = false;
             return Companion.syncNext();
@@ -434,6 +471,8 @@ public final class RadioSession {
     private void becomeReady() {
         phase = Phase.READY;
         backoffStep = 0;
+        // E6: read uptime, battery and error flags once per READY. Read-only.
+        statsWanted = true;
         note("session_ready");
     }
 
@@ -477,11 +516,14 @@ public final class RadioSession {
         if (cmd == Companion.CMD_GET_CHANNEL) {
             return response == Companion.PACKET_CHANNEL_INFO;
         }
-        if (cmd == Companion.CMD_SEND_CHANNEL_DATA) {
+        if (cmd == Companion.CMD_SEND_CHANNEL_DATA || cmd == Companion.CMD_SEND_CHANNEL_TXT) {
             return response == Companion.PACKET_OK;
         }
         if (cmd == Companion.CMD_SYNC_NEXT) {
             return response < 0x80;
+        }
+        if (cmd == Companion.CMD_GET_STATS) {
+            return response == Companion.PACKET_STATS;
         }
         return false;
     }
