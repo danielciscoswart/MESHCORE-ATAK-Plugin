@@ -45,7 +45,7 @@ import gov.tak.platform.marshal.MarshalManager;
 public final class MeshCoreAtakPlugin implements IPlugin {
     static final String TAG = "MeshCoreAtak";
     /** Shown at the start of the status line so the installed build is obvious. */
-    static final String BUILD_TAG = "v7";
+    static final String BUILD_TAG = "v7.1";
 
     private final IServiceController serviceController;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -447,6 +447,7 @@ public final class MeshCoreAtakPlugin implements IPlugin {
                 + " watch=" + watchGeoChat
                 + "\nperms " + perms.detail(Build.VERSION.SDK_INT)
                 + "\nradio: " + radio.summary(now)
+                + (radio.advice().isEmpty() ? "" : "\n" + radio.advice())
                 + "\n\nInbound traffic is unverified. Fragments over 165 bytes are not sent."
                 + "\nA contact UID is not a private radio destination.");
     }

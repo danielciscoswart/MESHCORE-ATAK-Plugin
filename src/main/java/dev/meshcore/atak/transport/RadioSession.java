@@ -101,6 +101,24 @@ public final class RadioSession {
         return handshakeMtuBlocked;
     }
 
+    /**
+     * C6: where the companion handshake is, for the status line. Channel numbers
+     * are 1-based: "channel 7/40" means channel slot 7 of 40 is being read.
+     */
+    public synchronized String handshakeProgress() {
+        switch (phase) {
+            case NEED_APP:
+                return "handshake: app start";
+            case NEED_DEVICE:
+                return "handshake: device query";
+            case NEED_CHANNELS:
+                int shown = Math.min(channelCursor + 1, Math.max(channelCount, 1));
+                return "handshake: channel " + shown + "/" + channelCount;
+            default:
+                return "handshake: done";
+        }
+    }
+
     public synchronized int consecutiveWriteRefusals() {
         return consecutiveWriteRefusals;
     }

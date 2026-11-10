@@ -47,6 +47,13 @@ public final class AllTests {
         test("connect button labels", LinkMachineChecks::buttonLabels);
         test("B3 refused write keeps the frame", LinkMachineChecks::refusedWriteKeepsFrame);
         test("R5 handshake failures are visible", LinkMachineChecks::handshakeFailuresAreVisible);
+        test("C1 radio held by another app", LinkRulesChecks::c1HeldByAnotherApp);
+        test("C2 failed write ends the attempt", LinkRulesChecks::c2WriteFailureEndsAttempt);
+        test("C3 GATT status hints", LinkRulesChecks::c3StatusHints);
+        test("C4 createBond refusal re-check", LinkRulesChecks::c4CreateBondRefused);
+        test("C5 MTU not negotiated", LinkRulesChecks::c5MtuNotNegotiated);
+        test("C6 handshake progress", LinkRulesChecks::c6HandshakeProgress);
+        test("scan start limit", LinkRulesChecks::scanLimit);
         test("optional mctak fixtures", AllTests::fixtures);
         test("optional official meshcore tree", TransportChecks::officialTree);
         System.out.println("PASSED " + passed + " FAILED " + failed + " SKIPPED " + skipped);

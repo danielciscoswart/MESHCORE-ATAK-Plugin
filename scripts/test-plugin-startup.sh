@@ -51,6 +51,27 @@ for needed, why in (
         raise SystemExit("MeshcoreGattLink: " + why)
 if "pollWrite()" in link[:link.index("session.peekWrite()")]:
     raise SystemExit("MeshcoreGattLink: pollWrite before peekWrite")
+# v7.1 source rules (C1 to C6). The Android callbacks cannot run on a JVM, so check the wiring.
+def body(text, start, end):
+    return text[text.index(start):text.index(end, text.index(start))]
+connect_to = body(link, "private void connectTo(", "private boolean heldByAnotherApp(")
+if "heldByAnotherApp(device)" not in connect_to or "LinkRules.HELD_REASON" not in connect_to:
+    raise SystemExit("MeshcoreGattLink: connectTo must refuse a radio held by another app (C1)")
+held = body(link, "private boolean heldByAnotherApp(", "private void enterDiscover(")
+if "getConnectedDevices(BluetoothProfile.GATT)" not in held or "LinkRules.heldByAnotherApp" not in held:
+    raise SystemExit("MeshcoreGattLink: held check must read getConnectedDevices(GATT) (C1)")
+cb = link[link.index("public void onCharacteristicWrite("):]
+cb = cb[:cb.index("private static byte[] copyOf")]
+if "LinkRules.writeFailureEndsAttempt(machine.state())" not in cb or '"write failed", status' not in cb:
+    raise SystemExit("MeshcoreGattLink: a failed write must end the attempt with its status (C2)")
+conn = body(link, "private void handleConnectionState(", "private void handleServices(")
+if "createBond()" not in conn or "getBondState()" not in conn[conn.index("createBond()"):] or "LinkRules.bondRefusalIsFatal(again)" not in conn:
+    raise SystemExit("MeshcoreGattLink: createBond false must re-read the bond state (C4)")
+mtu = body(link, "private void handleMtu(", "private void handleDescriptorWrite(")
+if "LinkRules.mtuProblem(negotiated)" not in mtu or "failLink(now, problem" not in mtu:
+    raise SystemExit("MeshcoreGattLink: MTU 23 must fail visibly (C5)")
+if "session.handshakeProgress()" not in link:
+    raise SystemExit("MeshcoreGattLink: status line must show handshake progress (C6)")
 manifest_text = manifest.read_text()
 if "@mipmap/ic_launcher" not in manifest_text or "ic_meshcore" in manifest_text:
     raise SystemExit("manifest icon is not the png mipmap")

@@ -276,6 +276,10 @@ public final class LinkMachine {
         StringBuilder sb = new StringBuilder(failReason);
         if (failStatus != NO_STATUS) {
             sb.append(" (status ").append(failStatus).append(')');
+            String hint = LinkRules.hint(failStatus);
+            if (!hint.isEmpty()) {
+                sb.append(", ").append(hint);
+            }
         }
         return sb.toString();
     }

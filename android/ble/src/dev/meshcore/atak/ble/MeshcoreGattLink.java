@@ -26,6 +26,7 @@ import android.provider.Settings;
 import android.util.Log;
 
 import dev.meshcore.atak.transport.LinkMachine;
+import dev.meshcore.atak.transport.LinkRules;
 import dev.meshcore.atak.transport.RadioLimits;
 import dev.meshcore.atak.transport.RadioSession;
 
@@ -187,6 +188,12 @@ public final class MeshcoreGattLink {
     private BluetoothGattCharacteristic tx;
     private boolean scanning;
     private boolean sawBonding;
+    /** When createBond() was called for this attempt, or 0 when it was not. */
+    private long bondRequestedMs;
+    /** When this plugin last closed its own GATT client, or 0. */
+    private long lastCloseMs;
+    /** Start times of recent scans, for Android's 5-starts-per-30-s limit. */
+    private final List<Long> scanStarts = new ArrayList<Long>();
     private long firstMatchMs;
     private String targetLabel = "";
     /** Address -> best sighting of the current or most recent scan. */
@@ -224,9 +231,7 @@ public final class MeshcoreGattLink {
 
     private String outcomeText() {
         String text = machine.failureText();
-        String out = machine.failStage() == LinkMachine.State.READY
-                ? "Lost: " + text
-                : "Failed: " + text + " [" + machine.failStage().name().toLowerCase(Locale.US) + "]";
+        String out = machine.failStage() == LinkMachine.State.READY ? "Lost: " + text : "Failed: " + text;
         return out.length() > 70 ? out.substring(0, 70) : out;
     }
 
@@ -248,6 +253,20 @@ public final class MeshcoreGattLink {
         return (s != LinkMachine.State.IDLE && s != LinkMachine.State.FAILED) || machine.autoRetry();
     }
 
+    /**
+     * Longer advice for the scrolling status area after a failure, or "" when
+     * there is none. The one-line status stays short.
+     */
+    public String advice() {
+        if (machine.state() != LinkMachine.State.FAILED) {
+            return "";
+        }
+        if (LinkRules.HELD_REASON.equals(machine.failReason())) {
+            return LinkRules.HELD_ADVICE;
+        }
+        return machine.failStatus() == LinkMachine.NO_STATUS ? "" : LinkRules.advice(machine.failStatus());
+    }
+
     /** Short single-line description of the current state. */
     public String summary(long nowMs) {
         switch (machine.state()) {
@@ -267,12 +286,13 @@ public final class MeshcoreGattLink {
             case NOTIFY:
                 return "enabling notifications";
             case HANDSHAKE:
-                return "handshake with " + targetLabel;
+                return session.handshakeProgress();
             case READY:
                 return "ready " + targetLabel + " mtu=" + session.mtu();
             default:
-                return "Failed: " + machine.failureText() + " [" + machine.failStage().name().toLowerCase(Locale.US)
-                        + "]" + (machine.failStage() == LinkMachine.State.SCAN ? " " + summarizeSeen(3) : "");
+                return "Failed (" + machine.failStage().name().toLowerCase(Locale.US) + "): "
+                        + machine.failureText()
+                        + (machine.failStage() == LinkMachine.State.SCAN ? " " + summarizeNames(3) : "");
         }
     }
 
@@ -350,6 +370,17 @@ public final class MeshcoreGattLink {
             return StartResult.FAILED;
         }
         this.scanner = found;
+        // Android allows 5 scan starts per 30 s; beyond that a scan silently returns nothing.
+        for (int i = scanStarts.size() - 1; i >= 0; i--) {
+            if (nowMs - scanStarts.get(i) >= LinkRules.SCAN_WINDOW_MS) {
+                scanStarts.remove(i);
+            }
+        }
+        if (LinkRules.scanLimitHit(scanStarts, nowMs)) {
+            failLink(nowMs, LinkRules.SCAN_LIMIT_REASON, LinkMachine.NO_STATUS);
+            return StartResult.FAILED;
+        }
+        scanStarts.add(nowMs);
         seen.clear();
         bestMatch = null;
         firstMatchMs = 0L;
@@ -407,6 +438,10 @@ public final class MeshcoreGattLink {
         }
         if (st == LinkMachine.State.HANDSHAKE) {
             superviseHandshake(nowMs);
+            st = machine.state();
+        } else if (st == LinkMachine.State.READY
+                && session.consecutiveWriteRefusals() >= WRITE_REFUSAL_LIMIT) {
+            failLink(nowMs, "Android refused the write " + WRITE_REFUSAL_LIMIT + " times", LinkMachine.NO_STATUS);
             st = machine.state();
         }
         session.tick(nowMs);
@@ -475,6 +510,10 @@ public final class MeshcoreGattLink {
         } else if (sawBonding) {
             // Went from BONDING back to NONE: pairing was refused or the PIN was wrong.
             failLink(nowMs, "pairing failed (bond not created)", LinkMachine.NO_STATUS);
+        } else if (bondRequestedMs > 0L
+                && LinkRules.pairingNeverStarted(false, bond, nowMs - bondRequestedMs)) {
+            // Pairing can fail inside one 1 s tick without us ever seeing BONDING.
+            failLink(nowMs, "pairing did not start", LinkMachine.NO_STATUS);
         }
     }
 
@@ -533,7 +572,10 @@ public final class MeshcoreGattLink {
             return;
         }
         int n = seen.size();
-        failLink(nowMs, "scan_timeout seen=" + n + (n == 0 ? "" : " no MeshCore match"), LinkMachine.NO_STATUS);
+        String locationNote = n == 0 && appContext != null && "off".equals(locationState(appContext))
+                ? " (Location is off)" : "";
+        failLink(nowMs, "scan_timeout seen=" + n + (n == 0 ? locationNote : " no MeshCore match"),
+                LinkMachine.NO_STATUS);
     }
 
     // ---- connect -----------------------------------------------------------
@@ -547,8 +589,17 @@ public final class MeshcoreGattLink {
         stopScan();
         targetLabel = label;
         sawBonding = false;
+        bondRequestedMs = 0L;
         if (!machine.enter(LinkMachine.State.CONNECTING, nowMs, "connect " + label + " (" + why + ")",
                 LinkMachine.NO_STATUS)) {
+            return;
+        }
+        // C1: if another app on this phone already holds the radio, Android would join that
+        // connection and the plugin would talk over the MeshCore app. Refuse instead.
+        // UNVERIFIED that this list includes other apps' connections; if it does not, the
+        // check finds nothing and the connect proceeds as before.
+        if (!LinkRules.ownCloseStillSettling(lastCloseMs, nowMs) && heldByAnotherApp(device)) {
+            failLink(nowMs, LinkRules.HELD_REASON, LinkMachine.NO_STATUS);
             return;
         }
         try {
@@ -566,6 +617,28 @@ public final class MeshcoreGattLink {
             gatt = created;
         } catch (SecurityException ex) {
             failLink(nowMs, "connect not allowed", LinkMachine.NO_STATUS);
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private boolean heldByAnotherApp(BluetoothDevice device) {
+        try {
+            BluetoothManager manager = (BluetoothManager) appContext.getSystemService(Context.BLUETOOTH_SERVICE);
+            if (manager == null) {
+                return false;
+            }
+            List<BluetoothDevice> connected = manager.getConnectedDevices(BluetoothProfile.GATT);
+            List<String> addresses = new ArrayList<String>();
+            if (connected != null) {
+                for (BluetoothDevice other : connected) {
+                    addresses.add(other.getAddress());
+                }
+            }
+            return LinkRules.heldByAnotherApp(addresses, device.getAddress());
+        } catch (SecurityException ex) {
+            return false;
+        } catch (RuntimeException ex) {
+            return false;
         }
     }
 
@@ -644,6 +717,7 @@ public final class MeshcoreGattLink {
         if (open == null) {
             return;
         }
+        lastCloseMs = System.currentTimeMillis();
         try {
             open.disconnect();
         } catch (SecurityException ignored) {
@@ -746,8 +820,14 @@ public final class MeshcoreGattLink {
                     if (g != gatt || status == BluetoothGatt.GATT_SUCCESS) {
                         return;
                     }
+                    long now = System.currentTimeMillis();
                     session.engine().counters().inc("gatt_write_status_" + status);
-                    machine.note(System.currentTimeMillis(), "write callback", status);
+                    machine.note(now, "write callback", status);
+                    // C2: a failed write ends the attempt with its real status code (for example
+                    // 5, 15 or 137: pairing keys rejected) instead of timing out as "no handshake reply".
+                    if (LinkRules.writeFailureEndsAttempt(machine.state())) {
+                        failLink(now, "write failed", status);
+                    }
                 }
             });
         }
@@ -816,8 +896,17 @@ public final class MeshcoreGattLink {
                 return;
             }
             try {
+                bondRequestedMs = now;
                 if (!g.getDevice().createBond()) {
-                    failLink(now, "createBond refused", LinkMachine.NO_STATUS);
+                    // C4: false can just mean the radio already started pairing. Re-read the state.
+                    int again = g.getDevice().getBondState();
+                    if (LinkRules.bondRefusalIsFatal(again)) {
+                        failLink(now, "createBond refused", LinkMachine.NO_STATUS);
+                    } else {
+                        sawBonding = again == BluetoothDevice.BOND_BONDING;
+                        machine.note(now, "createBond returned false, bond state " + again + ", continuing",
+                                LinkMachine.NO_STATUS);
+                    }
                 }
             } catch (SecurityException ex) {
                 failLink(now, "createBond not allowed", LinkMachine.NO_STATUS);
@@ -863,11 +952,10 @@ public final class MeshcoreGattLink {
             asked = false;
         }
         if (!asked) {
-            // Not fatal by itself: carry on at the default MTU. If the handshake then cannot be
-            // written, the link fails with "MTU too small (n)".
-            machine.note(now, "requestMtu refused, using 23", LinkMachine.NO_STATUS);
-            session.onMtu(23, now);
-            enterNotify(g, now);
+            // C5: the MTU stays at the default, so replies would be cut to 20 bytes.
+            machine.note(now, "requestMtu refused", LinkMachine.NO_STATUS);
+            session.onMtu(LinkRules.DEFAULT_MTU, now);
+            failLink(now, LinkRules.mtuProblem(LinkRules.DEFAULT_MTU), LinkMachine.NO_STATUS);
         }
     }
 
@@ -876,11 +964,15 @@ public final class MeshcoreGattLink {
         if (g != gatt || machine.state() != LinkMachine.State.MTU) {
             return;
         }
-        int negotiated = status == BluetoothGatt.GATT_SUCCESS ? mtu : 23;
-        if (status != BluetoothGatt.GATT_SUCCESS) {
-            machine.note(now, "mtu callback failed, using 23", status);
-        }
+        int negotiated = status == BluetoothGatt.GATT_SUCCESS ? mtu : LinkRules.DEFAULT_MTU;
         session.onMtu(negotiated, now);
+        // C5: fail visibly when the MTU is still the default 23. At 23 a 19-byte APP_START
+        // still fits, but the radio's replies would be truncated to 20 bytes.
+        String problem = LinkRules.mtuProblem(negotiated);
+        if (problem != null) {
+            failLink(now, problem, status == BluetoothGatt.GATT_SUCCESS ? LinkMachine.NO_STATUS : status);
+            return;
+        }
         enterNotify(g, now);
     }
 
@@ -916,6 +1008,24 @@ public final class MeshcoreGattLink {
             sb.append(']');
         }
         return sb.toString();
+    }
+
+    /** Names and RSSI only, for places where "seen=N" is already in the text. */
+    private String summarizeNames(int limit) {
+        List<Sighting> list = sortedSeen();
+        int n = Math.min(limit, list.size());
+        if (n == 0) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < n; i++) {
+            Sighting s = list.get(i);
+            sb.append(i == 0 ? "" : "; ").append(s.label).append(' ').append(s.rssi);
+            if (s.match()) {
+                sb.append('*');
+            }
+        }
+        return sb.append(']').toString();
     }
 
     private List<Sighting> sortedSeen() {
