@@ -272,6 +272,68 @@ public final class PluginHost {
         return send.status;
     }
 
+    /**
+     * J1: the {@code destinations} of ATAK's MESSAGE Bundle. It holds a String[] when ATAK built it.
+     * A string form (the chat database stores a delimited string) is split too, so the "other
+     * recipients" check cannot be skipped by a different type. Anything else counts as no list.
+     */
+    public static String[] destinationsOf(Object raw) {
+        if (raw instanceof String[]) {
+            return (String[]) raw;
+        }
+        if (raw instanceof String) {
+            String text = ((String) raw).trim();
+            if (text.isEmpty() || text.equals("null")) {
+                return null;
+            }
+            return text.split("[,;\\s]+");
+        }
+        return null;
+    }
+
+    /** J1: longest typed room message looked at. The engine then applies the byte caps. */
+    static final int ROOM_TEXT_CAP_CHARS = 2_000;
+
+    /**
+     * v7.4 (J1): a message typed into the MeshCore room, exactly as ATAK 5.6 hands it to the
+     * room's PluginConnector Intent ({@code MESSAGE} Bundle: conversationId, destinations,
+     * senderUid, messageId, message). This is the real send path; {@link #offerOutboundChat} was
+     * written for a comms-logger event that ATAK never produces for a plugin contact.
+     *
+     * <p>Only a message whose conversation is a MeshCore room is considered, and only when every
+     * other destination in the Bundle is this device. A Bundle that also names someone else would
+     * be delivered to them by ATAK's own chat service, so it is refused and nothing is queued.
+     * Returns the engine status ("QUEUED", ...) or "REFUSED"/"STOPPED"; {@link #lastWhy()} has the
+     * sentence for the user. The text is never logged.
+     */
+    public String offerRoomChat(String conversationId, String[] destinations, String selfUid,
+                                String messageId, String text, long nowMs) {
+        lastWhy = "";
+        engine.counters().inc("room_send_intent");
+        if (life != Life.STARTED) {
+            lastWhy = SendReasons.STOPPED;
+            return "STOPPED";
+        }
+        if (conversationId == null || !conversationId.startsWith(ROOM_UID_PREFIX)
+                || text == null || text.trim().isEmpty() || text.length() > ROOM_TEXT_CAP_CHARS) {
+            engine.counters().inc("room_send_bad_bundle");
+            lastWhy = "Not sent: message could not be read";
+            return "REFUSED";
+        }
+        if (destinations != null) {
+            for (String dest : destinations) {
+                if (dest != null && !dest.equals(conversationId) && !dest.equals(selfUid)) {
+                    engine.counters().inc("room_send_mixed_dest");
+                    lastWhy = "Not sent: this chat has other recipients";
+                    return "REFUSED";
+                }
+            }
+        }
+        Engine.Send send = engine.sendFromRoom(conversationId, messageId, text, nowMs);
+        lastWhy = send.why;
+        return send.status;
+    }
+
     /** Prefix of every room uid. Only a destination that starts with it is looked at. */
     public static final String ROOM_UID_PREFIX = Engine.ROOM_UID_PREFIX;
 

@@ -230,6 +230,7 @@ public final class Engine {
     private Companion.SelfInfo self;
     private final Map<Integer, Companion.ChannelView> channels = new LinkedHashMap<>();
     private Integer selected;
+    private String lastNativeNote = "none";
     private boolean locationOptIn;
     private final List<NativeMessage> nativeInbox = new ArrayList<>();
     private final List<NativeMessage> nativeNew = new ArrayList<>();
@@ -530,6 +531,12 @@ public final class Engine {
             return;
         }
         counters.inc("native_text_rx");
+        // J2: say which slot the radio reported, so a "different channel" result can be read from
+        // one diag. Frame layout, selected slot and size only; the text is never kept here.
+        counters.inc(parsed.direct ? "native_slot_direct" : "native_slot_" + parsed.channel);
+        lastNativeNote = "frame=0x" + hex2(frame[0]) + " " + (parsed.direct ? "direct" : "channel=" + parsed.channel)
+                + " selected=" + (selected == null ? "none" : selected.toString())
+                + " path=" + parsed.pathLen + " bytes=" + frame.length;
         NativeMessage message = new NativeMessage(parsed.direct, parsed.channel,
                 parsed.senderPrefixHex, displayText(parsed.text), nowMs);
         if (nativeInbox.size() >= NATIVE_INBOX_CAP) {
@@ -575,6 +582,11 @@ public final class Engine {
             sb.append(c < 0x20 || c == 0x7F ? ' ' : c);
         }
         return sb.toString();
+    }
+
+    /** J2: how the last native text frame was read (no text). */
+    public String lastNativeNote() {
+        return lastNativeNote;
     }
 
     /** The last {@link #NATIVE_INBOX_CAP} native messages, oldest first. */

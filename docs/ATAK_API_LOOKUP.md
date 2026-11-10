@@ -109,3 +109,19 @@ Checked on 2026-11-09 on the box that holds the SDK, by listing the public signa
 - Whether ATAK's chat window lets the user type into a contact that has only a `PluginConnector`, and whether the contact list hides it.
 - Whether the injected event shape (`__chat` with `id` = this device's uid, the room contact as `chatgrp uid0` and `link` `p-p`) files the message under the room contact. This follows `ChatMessageParser`, which takes the conversation from the sender contact when `id` equals the device uid, but it was not run.
 - Behaviour of all of the above on Play Store 5.6.0.12.
+
+
+## v7.4 correction (J1): what ATAK does when the user types into a room whose contact has a PluginConnector
+
+The v7.3 notes above ("What the bytecode says about sending") described `ChatManagerMapComponent.sendMessage(Bundle, String[])` and `GeoChatService`. That is the API a plugin calls to send. It is NOT what the chat window calls. The phone test on 2026-11-10 (ATAK-CIV 5.6.0.12) showed the typed message reaching nothing, and a second read of the 5.6.0.26 `main.jar` (`javap -c -p`, local only) found the real path:
+
+1. The send button calls `ConversationFragment.sendMessage(String, Bundle)`, which calls its `SendBehavior`. `ChatManagerMapComponent$3` (the behavior set in `getOrCreateFragment`) calls the private `sendMessageToDests(Bundle, List<Contact>)`.
+2. `sendMessageToDests` stores the sent line with `GeoChatService.persistMessage` (local chat database only; this is why "Me:" appears), builds the `destinations` array, and then for each destination uid other than this device:
+   - `All Chat Rooms`: broadcasts `com.atakmap.android.chat.SEND_MESSAGE_ALL_CHAT_ROOMS`.
+   - an `IndividualContact` that has a `connector.plugin` connector: `AtakBroadcast.getInstance().sendBroadcast(new Intent(connector.getConnectionString()).putExtra("MESSAGE", bundle))`. Nothing else happens for that contact. `GeoChatService.sendMessage` is not called, so `CommsMapComponent.sendCoT` is not called, so no `CommsLogger.logSend` ever fires.
+   - an `IndividualContact` with no plugin connector: only then does it use the network (`ContactUtil.getGeoChatIpAddress`, `GeoChatService.sendMessage`).
+3. `AtakBroadcast` wraps androidx `LocalBroadcastManager` (checked: `registerReceiver`/`sendBroadcast` call `LocalBroadcastManager`). The Intent never leaves the ATAK process.
+4. The `MESSAGE` Bundle has: `message`, `messageId`, `conversationId` (the room uid), `conversationName`, `senderUid`, `senderCallsign`, `uid`, `sentTime`, `type`="GeoChat", `protocol`, `deviceType`, `destinations` (String[]), `paths`, `parent`, `status`, `rawCotEvent`/`cotEventUid` after persist.
+5. The same code is in the public ATAK-CIV 4.6.0.5 source (`ChatManagerMapComponent.sendMessageToDests`, with the public constants `PLUGIN_SEND_MESSAGE_ALL_CHAT_ROOMS` and `PLUGIN_SEND_MESSAGE_EXTRA = "MESSAGE"`), so it is very likely the same in Play Store 5.6.0.12. Not run there.
+
+So v7.3's comms-logger send hook could never fire for the room. v7.4 registers a `BroadcastReceiver` for the connector action (`RoomSendReceiver`). The comms logger now only counts.

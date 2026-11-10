@@ -102,6 +102,12 @@ public final class AllTests {
         test("(a) plugin chat that is not for all gets a prefix", V73Checks::haScopePrefixOnInboundPluginChat);
         test("(b) delivered receipt is off by default", V73Checks::hbDeliveredReceiptIsOffByDefault);
         test("optional push codes vs official firmware", V73Checks::pushCodesMatchTheOfficialFirmware);
+        test("J1 typed room message arrives as a connector intent", V74Checks::j1TypedRoomMessageArrivesAsAConnectorIntent);
+        test("J1 unreadable or foreign bundles never send", V74Checks::j1UnreadableOrForeignBundlesNeverSend);
+        test("J1 stale room, lost link and stopped host refuse", V74Checks::j1StaleRoomClosedAndStoppedHostRefuse);
+        test("J1 Android side is wired to the connector intent", V74Checks::j1AndroidSideIsWiredToTheConnectorIntent);
+        test("J2 native channel frame from firmware bytes", V74Checks::j2NativeChannelFrameFromFirmwareBytes);
+        test("J2 slot is counted and explained without text", V74Checks::j2SlotIsCountedAndExplainedWithoutText);
         test("optional mctak fixtures", AllTests::fixtures);
         test("optional official meshcore tree", TransportChecks::officialTree);
         System.out.println("PASSED " + passed + " FAILED " + failed + " SKIPPED " + skipped);

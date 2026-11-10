@@ -1441,6 +1441,7 @@ public final class MeshcoreGattLink {
         sb.append("frames: native_text=").append(engine.counters().get("native_text_rx"))
                 .append(" mctak_data=").append(engine.counters().get("mctak_data_rx"))
                 .append(" no_more_messages=").append(engine.counters().get("no_more_messages")).append('\n');
+        sb.append("last native text: ").append(engine.lastNativeNote()).append('\n');
         Engine.RadioStats stats = engine.radioStats();
         if (stats == null) {
             sb.append("radio stats: none read yet (stats_unavailable=")

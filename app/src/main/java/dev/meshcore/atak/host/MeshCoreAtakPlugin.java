@@ -22,6 +22,7 @@ import android.widget.Toast;
 
 import com.atak.plugins.impl.PluginContextProvider;
 import com.atak.plugins.impl.PluginLayoutInflater;
+import com.atakmap.android.ipc.AtakBroadcast;
 import com.atakmap.android.maps.MapView;
 import com.atakmap.comms.CommsMapComponent;
 
@@ -53,7 +54,7 @@ import gov.tak.platform.marshal.MarshalManager;
 public final class MeshCoreAtakPlugin implements IPlugin {
     static final String TAG = "MeshCoreAtak";
     /** Shown at the start of the status line so the installed build is obvious. */
-    static final String BUILD_TAG = "v7.3";
+    static final String BUILD_TAG = "v7.4";
 
     private final IServiceController serviceController;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -65,6 +66,9 @@ public final class MeshCoreAtakPlugin implements IPlugin {
     private MeshCoreRoomLogger roomLogger;
     private final AtakChatRoom room = new AtakChatRoom();
     private boolean roomLoggerRegistered;
+    /** J1: receives the Intent ATAK sends to the room's PluginConnector when the user types. */
+    private RoomSendReceiver roomSendReceiver;
+    private boolean roomSendReceiverRegistered;
     private long roomRetryAtMs;
     private Engine.RoomSpec roomSpecShown;
     private Pane pane;
@@ -1161,7 +1165,7 @@ public final class MeshCoreAtakPlugin implements IPlugin {
 
     private String roomSummary() {
         return (room.present() ? "present \"" + room.name() + "\"" : "none")
-                + " logger=" + roomLoggerRegistered;
+                + " logger=" + roomLoggerRegistered + " sendReceiver=" + roomSendReceiverRegistered;
     }
 
     /** Keep ATAK's contact list in step with the engine: one room while a channel is chosen. */
@@ -1231,22 +1235,73 @@ public final class MeshCoreAtakPlugin implements IPlugin {
             Log.e(TAG, "comms lookup failed", t);
         }
         if (want) {
-            if (roomLoggerRegistered) {
+            if (roomLoggerRegistered && roomSendReceiverRegistered) {
                 return true;
             }
             if (comms == null) {
                 return false;
             }
-            comms.registerCommsLogger(roomLogger);
-            roomLoggerRegistered = true;
+            // J1: the receiver is what makes typing in the room work. Without it the room is not offered.
+            if (!registerSendReceiver()) {
+                return false;
+            }
+            if (!roomLoggerRegistered) {
+                comms.registerCommsLogger(roomLogger);
+                roomLoggerRegistered = true;
+            }
             return true;
         }
+        unregisterSendReceiver();
         if (roomLoggerRegistered && comms != null) {
             comms.unregisterCommsLogger(roomLogger);
         }
         roomLoggerRegistered = false;
         roomLogger.dispose();
         return true;
+    }
+
+    private boolean registerSendReceiver() {
+        if (roomSendReceiverRegistered) {
+            return true;
+        }
+        try {
+            if (roomSendReceiver == null) {
+                roomSendReceiver = new RoomSendReceiver(new RoomSendReceiver.Sink() {
+                    @Override
+                    public void onRoomSend(String conversationId, String[] destinations, String senderUid,
+                                           String messageId, String text) {
+                        handleRoomSend(conversationId, destinations, senderUid, messageId, text);
+                    }
+
+                    @Override
+                    public void onRoomSendUnreadable() {
+                        handleRoomSend(null, null, null, null, null);
+                    }
+                });
+            }
+            AtakBroadcast.DocumentedIntentFilter filter = new AtakBroadcast.DocumentedIntentFilter();
+            filter.addAction(AtakChatRoom.CONNECTOR_ACTION,
+                    "A message typed into the MeshCore chat room (MeshCore ATAK plugin)");
+            AtakBroadcast.getInstance().registerReceiver(roomSendReceiver, filter);
+            roomSendReceiverRegistered = true;
+            return true;
+        } catch (Throwable t) {
+            Log.e(TAG, "room send receiver failed: " + t.getClass().getName());
+            return false;
+        }
+    }
+
+    private void unregisterSendReceiver() {
+        if (!roomSendReceiverRegistered || roomSendReceiver == null) {
+            roomSendReceiverRegistered = false;
+            return;
+        }
+        try {
+            AtakBroadcast.getInstance().unregisterReceiver(roomSendReceiver);
+        } catch (Throwable t) {
+            Log.e(TAG, "room send receiver unregister failed: " + t.getClass().getName());
+        }
+        roomSendReceiverRegistered = false;
     }
 
     /** Chats ATAK received from the network, handed to the engine for the duplicate check (G4). */
@@ -1280,40 +1335,42 @@ public final class MeshCoreAtakPlugin implements IPlugin {
     }
 
     /**
-     * Messages typed into the room (G2). The engine sends only what was addressed to the room.
+     * Messages typed into the room (G2, J1). ATAK delivers them to {@link RoomSendReceiver}, which
+     * calls this on the main thread. The engine sends only what was addressed to the current room.
      * Every refusal and every radio result is shown as a toast and on the status line (G5);
-     * nothing is called delivered.
+     * nothing is called delivered. A null conversationId means ATAK's Intent could not be read.
      */
+    private void handleRoomSend(String conversationId, String[] destinations, String senderUid,
+                                String messageId, String text) {
+        if (host == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        String status = host.offerRoomChat(conversationId, destinations, MapView.getDeviceUid(), messageId,
+                text, now);
+        lastChatStatus = status;
+        if ("QUEUED".equals(status)) {
+            String queued = "Queued for the radio (" + host.engine().chatModeLabel() + ")";
+            lastSendNote = queued;
+            setTransient(queued);
+            toast(queued);
+        } else if (!host.lastWhy().isEmpty()) {
+            refuse(host.lastWhy());
+        }
+    }
+
+    /** Counters for room sends seen on the comms layer, which should never happen (J1). */
     private void drainRoomOutbound(long now) {
         if (host == null || roomLogger == null) {
             return;
-        }
-        int overflow = roomLogger.takeOverflow();
-        if (overflow > 0) {
-            // H3: a typed message did not fit the hold. Say so; it was not sent.
-            for (int i = 0; i < overflow && i < 50; i++) {
-                host.engine().counters().inc("room_send_overflow");
-            }
-            refuse("Not sent: too many messages at once");
         }
         int ignored = roomLogger.takeIgnored();
         for (int i = 0; i < ignored && i < 50; i++) {
             host.engine().counters().inc("chat_other_ignored");
         }
-        for (int i = 0; i < 4; i++) {
-            MeshCoreRoomLogger.Outbound out = roomLogger.pollOutbound();
-            if (out == null) {
-                return;
-            }
-            String status = host.offerOutboundChat(out.xml, out.toUids, now);
-            lastChatStatus = status;
-            if ("QUEUED".equals(status)) {
-                String queued = "Queued for the radio (" + host.engine().chatModeLabel() + ")";
-                lastSendNote = queued;
-                setTransient(queued);
-            } else if (!host.lastWhy().isEmpty()) {
-                refuse(host.lastWhy());
-            }
+        int unexpected = roomLogger.takeUnexpectedRoomLogSend();
+        for (int i = 0; i < unexpected && i < 50; i++) {
+            host.engine().counters().inc("room_logsend_unexpected");
         }
     }
 

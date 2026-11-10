@@ -17,9 +17,10 @@ import dev.meshcore.atak.plugin.PluginHost;
  * they only do a cheap type check and a short hand-off; the plugin's one-second tick drains the
  * queues on the main thread.
  * <ul>
- *   <li>{@code logSend(event, String[] toUids)}: a chat event is held only when ATAK addressed it
- *       to exactly one uid and that uid is the MeshCore room's. Every other chat (all chat
- *       rooms, a TAK-server group, a person) is counted and its text is not read.</li>
+ *   <li>{@code logSend(event, String[] toUids)}: counted only (v7.4). A message typed into the
+ *       room does not come through here; ATAK sends it to the room's PluginConnector Intent and
+ *       {@link RoomSendReceiver} gets it. Every chat seen here is counted and its text is not
+ *       read.</li>
  *   <li>{@code logSend(event, String destination)}: counted only. The room has no endpoint, so a
  *       send to an address is never the room.</li>
  *   <li>{@code logReceive}: a chat that ATAK received from the network is reduced to the sender
@@ -57,28 +58,26 @@ final class MeshCoreRoomLogger implements CommsLogger {
     private final BoundedHold<Outbound> pending = new BoundedHold<Outbound>(MAX_PENDING);
     private final ArrayDeque<NetworkChat> network = new ArrayDeque<NetworkChat>();
     private int ignoredOther;
+    private int unexpectedRoomLogSend;
 
     @Override
     public void logSend(CotEvent message, String[] toUids) {
         if (!isChat(message)) {
             return;
         }
-        if (toUids == null || toUids.length != 1 || toUids[0] == null
-                || !toUids[0].startsWith(PluginHost.ROOM_UID_PREFIX)) {
-            synchronized (pending) {
+        // v7.4 (J1): a message typed into the room never reaches this callback, because ATAK sends
+        // it to the room's PluginConnector Intent instead of the comms layer (RoomSendReceiver).
+        // A room uid seen here is unexpected: it is counted and NOT sent, so nothing can go out
+        // twice. Every other chat is counted and its text is not read.
+        boolean room = toUids != null && toUids.length > 0 && toUids[0] != null
+                && toUids[0].startsWith(PluginHost.ROOM_UID_PREFIX);
+        synchronized (pending) {
+            if (room) {
+                unexpectedRoomLogSend++;
+            } else {
                 ignoredOther++;
             }
-            return;
         }
-        String xml = message.toString();
-        if (xml == null || xml.length() > MAX_XML_CHARS) {
-            synchronized (pending) {
-                ignoredOther++;
-            }
-            return;
-        }
-        // H3: a full hold refuses the new message and counts it; the tick shows "Not sent".
-        pending.offer(new Outbound(xml, new String[] {toUids[0]}));
     }
 
     @Override
@@ -127,6 +126,15 @@ final class MeshCoreRoomLogger implements CommsLogger {
 
     Outbound pollOutbound() {
         return pending.poll();
+    }
+
+    /** J1: room sends that arrived through the comms layer, which should never happen. */
+    int takeUnexpectedRoomLogSend() {
+        synchronized (pending) {
+            int n = unexpectedRoomLogSend;
+            unexpectedRoomLogSend = 0;
+            return n;
+        }
     }
 
     /** H3: messages the user typed that did not fit the hold since the last call. */

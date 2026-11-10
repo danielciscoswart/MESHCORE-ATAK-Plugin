@@ -92,8 +92,8 @@ if "getFilesDir" in text or "selectFirstTeamChannel" in text or "selectFirstTeam
     raise SystemExit("plugin must not use getFilesDir (E3) or pick a channel itself (E2)")
 if text.count("restoreSequence()") < 1 or "restoreSequence()" not in onstart:
     raise SystemExit("onStart must restore the sequence (E3)")
-if 'BUILD_TAG = "v7.3"' not in text:
-    raise SystemExit("on-screen tag must be v7.3")
+if 'BUILD_TAG = "v7.4"' not in text:
+    raise SystemExit("on-screen tag must be v7.4")
 root = java.parents[8]
 engine_src = (root / "src/main/java/dev/meshcore/atak/engine/Engine.java").read_text()
 if "selectFirstTeamChannel" in engine_src:
@@ -146,8 +146,9 @@ if 'engine.sendChat(' in host_src or 'offerChat(' in host_src:
     raise SystemExit("G2: PluginHost must not send chat itself; only the room path may")
 logger = (host_dir / "MeshCoreRoomLogger.java").read_text()
 chat_room = (host_dir / "AtakChatRoom.java").read_text()
-if "toUids.length != 1" not in logger or "ROOM_UID_PREFIX" not in logger:
-    raise SystemExit("G2: the logger must hold a chat only when it is addressed to exactly the room")
+# v7.4 (J1): the comms logger only counts; a room send arrives as the PluginConnector Intent.
+if "pending.offer(" in logger or "unexpectedRoomLogSend" not in logger or "ROOM_UID_PREFIX" not in logger:
+    raise SystemExit("J1: the logger must only count a room send, never queue it")
 for banned in ("getExternalDispatcher", "dispatchToBroadcast", "dispatchToContacts", "sendCoTToServersOnly", "sendCoTToEndpoint", "sendMessage("):
     for name, body in (("logger", logger), ("room", chat_room), ("plugin", text), ("bridge", (host_dir / "AtakCotBridge.java").read_text())):
         if banned in body:
@@ -176,8 +177,10 @@ if 'LABEL = "(MeshCore, unverified)"' not in engine_src:
 # v7.3H checks
 if "BoundedHold" not in logger or "pending.removeFirst" in logger or "pending.pollFirst" in logger:
     raise SystemExit("H3: the outbound hold must refuse a new message when full, not drop an old one")
-if "takeOverflow()" not in text or "Not sent: too many messages at once" not in text:
-    raise SystemExit("H3: a full hold must show 'Not sent: too many messages at once'")
+# v7.4 (J1): there is no outbound hold any more; the engine's own queue limit refuses with a sentence,
+# and handleRoomSend shows every refusal.
+if "handleRoomSend(" not in text or "host.offerRoomChat(" not in text:
+    raise SystemExit("J1: a typed room message must go to PluginHost.offerRoomChat from the Intent receiver")
 if "PluginHost.isChatType(" not in logger or '"b-t-f".equals' in logger:
     raise SystemExit("H4: the logger must use the shared chat type check")
 if "Engine.modeNotice(" not in text:
@@ -193,5 +196,14 @@ if "if (!deliveredReceipts)" not in engine_src:
 manifest_text = manifest.read_text()
 if "@mipmap/ic_launcher" not in manifest_text or "ic_meshcore" in manifest_text:
     raise SystemExit("manifest icon is not the png mipmap")
+# v7.4 (J1): ATAK 5.6 sends a plugin contact's chat to its connector Intent (not to the comms layer).
+if 'CONNECTOR_ACTION = "dev.meshcore.atak.plugin.ROOM_SEND_MESSAGE"' not in chat_room:
+    raise SystemExit("J1: the connector action constant is missing")
+if "filter.addAction(AtakChatRoom.CONNECTOR_ACTION" not in text or "registerReceiver(roomSendReceiver, filter)" not in text:
+    raise SystemExit("J1: a receiver must be registered for the connector action")
+if "unregisterReceiver(roomSendReceiver)" not in text:
+    raise SystemExit("J1: the receiver must be unregistered with the room")
+if text.index("registerSendReceiver()") > text.index("comms.registerCommsLogger(roomLogger)"):
+    raise SystemExit("J1: the receiver must be registered before the room is offered")
 print("ok plugin startup source")
 PY

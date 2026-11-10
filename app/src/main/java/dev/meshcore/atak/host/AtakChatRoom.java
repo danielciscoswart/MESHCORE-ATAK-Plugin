@@ -13,9 +13,9 @@ import dev.meshcore.atak.engine.Engine;
  * G1: the one ATAK chat room the plugin offers, "MeshCore: &lt;channel&gt; (&lt;mode&gt;)".
  *
  * <p>The room is an {@link IndividualContact} that has a {@link PluginConnector} and no network
- * connector, so ATAK has no address to send to. ATAK's own send path then drops a message
- * addressed to it ("Send to unknown contact", read in the 5.6.0.26 bytecode; to be proven on the
- * phone by test G6), and the plugin's {@link MeshCoreRoomLogger} sees the send and decides.
+ * connector. ATAK hands a message typed into its window to the connector's Intent action and does
+ * nothing else with it (v7.4, J1; read in the 5.6.0.26 bytecode). {@link RoomSendReceiver}
+ * receives that Intent and the plugin decides. No copy reaches the TAK server.
  * It exists only while {@link Engine#roomSpec()} says it should: it is replaced when the channel
  * changes and removed when the channel, the radio or the link goes away, and when the plugin
  * stops. A mode switch renames it.
@@ -23,8 +23,16 @@ import dev.meshcore.atak.engine.Engine;
  * <p>Every call here runs on the main thread (the plugin tick or a button).
  */
 final class AtakChatRoom {
-    /** Intent action text for the PluginConnector. No receiver is registered for it. */
-    private static final String CONNECTOR_ACTION = "dev.meshcore.atak.plugin.ROOM_NOT_AN_ENDPOINT";
+    /**
+     * Intent action of the room's PluginConnector. v7.4 (J1): this is the ONLY way a message typed
+     * into the room reaches the plugin. ATAK 5.6's chat send ({@code ChatManagerMapComponent
+     * .sendMessageToDests}) finds the {@code connector.plugin} connector on the contact and
+     * broadcasts an Intent with this action and a {@code MESSAGE} Bundle through
+     * {@code AtakBroadcast} (a LocalBroadcastManager: in-process only). It then skips
+     * {@code GeoChatService} and the comms layer completely, so a CommsLogger never sees it.
+     * {@link RoomSendReceiver} is registered for this action while the room exists.
+     */
+    static final String CONNECTOR_ACTION = "dev.meshcore.atak.plugin.ROOM_SEND_MESSAGE";
 
     private IndividualContact contact;
     private String uid = "";
