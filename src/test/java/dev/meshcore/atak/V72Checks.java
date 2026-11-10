@@ -629,11 +629,12 @@ final class V72Checks {
             engine.onChannelDataReply(3);
             check(engine.lastChatResult().startsWith("Failed: "));
             engine.onChannelDataReply(-1);
-            eq("Failed: radio did not answer", engine.lastChatResult());
+            eq(SendReasons.NO_ANSWER, engine.lastChatResult());
             for (int code = -2; code < 10; code++) {
                 engine.onChannelDataReply(code);
                 check(!engine.lastChatResult().toLowerCase().contains("delivered"));
-                check(engine.lastChatResult().equals("Sent to radio") || engine.lastChatResult().startsWith("Failed: "));
+                check(engine.lastChatResult().equals("Sent to radio") || engine.lastChatResult().startsWith("Failed: ")
+                        || engine.lastChatResult().equals(SendReasons.NO_ANSWER));
             }
         }
         // Through the session: OK -> "Sent to radio", error -> Failed, timeout -> Failed, both opcodes.
@@ -676,7 +677,7 @@ final class V72Checks {
             out = session.pollWrite();
             check(out != null && (out[0] & 0xFF) == op);
             session.tick(now + 800 + RadioLimits.COMMAND_TIMEOUT_MS + 1);
-            eq("Failed: radio did not answer", engine.lastChatResult());
+            eq(SendReasons.NO_ANSWER, engine.lastChatResult());
         }
     }
 
@@ -799,6 +800,192 @@ final class V72Checks {
         for (int op : seen) {
             check("opcode " + op, allowed.contains(op));
         }
+    }
+
+
+    // ---- F1: one airtime bucket across links ----------------------------------------------
+
+    private static void selfInfo(Engine engine, int freqKhz, String name, long nowMs) {
+        byte[] key = new byte[32];
+        Bytes.putRaw4(key, 0, 0x22222222);
+        engine.receiveFrame(Companion.selfInfo(key, freqKhz, 62_500, 8, 5, name), nowMs);
+    }
+
+    /** Send chats until the bucket is clearly below full. Returns the time after the last drain. */
+    private static long spendTokens(Engine engine, long start) {
+        long t = start;
+        for (int i = 0; i < 40; i++) {
+            t += 400L;
+            engine.sendChat(Mctak.SCOPE_ALL, 0, "", "spend " + i, t);
+            engine.drainTx(t);
+        }
+        return t;
+    }
+
+    static void f1BucketSurvivesReconnect() {
+        Engine engine = ready("node");
+        engine.selectChannel(1);
+        int capacity = engine.airtimeCapacityMs();
+        eq(60_000, capacity); // 910.525 MHz, 10 % duty
+        eq(capacity, engine.airtimeTokensMs()); // a fresh bucket is full once
+        long t = spendTokens(engine, 1_000L);
+        int spent = engine.airtimeTokensMs();
+        check("tokens still " + spent, spent < capacity - 5_000);
+        // Lose the link, reconnect to the same radio a moment later.
+        engine.onLinkLost();
+        engine.onLinkUp(t + 2_000L);
+        selfInfo(engine, 910_525, "node", t + 2_100L);
+        int after = engine.airtimeTokensMs();
+        // Only the refill for ~2 s at 10 % duty (about 200 ms) may have been earned.
+        check("tokens back to " + after + " from " + spent, after <= spent + 400);
+        check(after < capacity - 5_000);
+        // The same holds with no loss event in between (a new link straight away).
+        engine.onLinkUp(t + 3_000L);
+        selfInfo(engine, 910_525, "node", t + 3_100L);
+        check(engine.airtimeTokensMs() <= spent + 700);
+    }
+
+    static void f1DutyFromNewRadioKeepsTokens() {
+        Engine engine = ready("node");
+        engine.selectChannel(1);
+        long t = spendTokens(engine, 1_000L);
+        int spent = engine.airtimeTokensMs();
+        check(spent < 55_000);
+        // A 868.1 MHz radio: 1 % duty, capacity 6 s. Tokens are capped, not refilled.
+        engine.onLinkLost();
+        engine.onLinkUp(t + 1_000L);
+        selfInfo(engine, 868_100, "eu", t + 1_100L);
+        eq(6_000, engine.airtimeCapacityMs());
+        check(engine.airtimeTokensMs() <= 6_000);
+        int low = engine.airtimeTokensMs();
+        // Back to the 910 MHz radio: capacity grows, the level does not jump to full.
+        engine.onLinkLost();
+        engine.onLinkUp(t + 2_000L);
+        selfInfo(engine, 910_525, "node", t + 2_100L);
+        eq(60_000, engine.airtimeCapacityMs());
+        check("jumped to " + engine.airtimeTokensMs(), engine.airtimeTokensMs() <= low + 400);
+        // Refill follows the new duty (10 %): 10 s earns about 1 s.
+        Engine probe = ready("node");
+        probe.selectChannel(1);
+        spendTokens(probe, 1_000L);
+        int before = probe.airtimeTokensMs();
+        probe.onLinkLost();
+        probe.onLinkUp(100_000L);
+        selfInfo(probe, 910_525, "node", 100_000L);
+        int atUp = probe.airtimeTokensMs();
+        check(atUp >= before && atUp <= before + 10_000);
+    }
+
+    static void f1QueuesAndSelfClearedOnLink() {
+        Engine engine = ready("node");
+        engine.selectChannel(1);
+        engine.sendChat(Mctak.SCOPE_ALL, 0, "", "queued", 5_000L);
+        engine.joinSelected(5_000L);
+        check(engine.queued() > 0);
+        engine.onLinkLost();
+        eq(0, engine.queued());
+        check(engine.airtimeTokensMs() >= 0); // the bucket is still there
+        engine.onLinkUp(6_000L);
+        // Self info is gone until the new radio sends its own: nothing from the old radio is used.
+        engine.setPluginOnlyChat(false);
+        eq(-1, engine.maxChatBytes(Mctak.SCOPE_ALL, 0, "")); // native cap needs the new radio's name
+        eq(SendReasons.NOT_READY, engine.sendNativeChannelText("hi", 6_100L).why);
+        eq(SendReasons.NOT_READY, engine.sendChat(Mctak.SCOPE_ALL, 0, "", "hi", 6_100L).why);
+        eq(SendReasons.NOT_READY, engine.joinSelected(6_100L).why);
+        // A different node name arrives: the cap follows the new radio, not the old one.
+        String longName = "a-much-longer-node-name";
+        selfInfo(engine, 910_525, longName, 6_200L);
+        engine.receiveFrame(Companion.channelInfo(1, "field-a", PRIVATE_A), 6_300L);
+        eq("OK", engine.selectChannel(1).status);
+        engine.setPluginOnlyChat(false);
+        eq(Companion.maxNativeTextBytes(longName.length()), engine.maxChatBytes(Mctak.SCOPE_ALL, 0, ""));
+        // A link that comes back also starts with no channels loaded.
+        Engine again = ready("node");
+        again.onLinkLost();
+        again.onLinkUp(9_000L);
+        eq(0, again.channelRows().size());
+    }
+
+    // ---- F2: no answer is not "Failed", and sends are never retried -----------------------------
+
+    static void f2NoAnswerWording() {
+        eq("No answer from radio: it may have been sent. Check before resending.", SendReasons.NO_ANSWER);
+        check(SendReasons.NO_ANSWER.length() <= 70); // whole text fits the 70-character toast
+        eq(SendReasons.NO_ANSWER, SendReasons.radioFailure(-1));
+        check(!SendReasons.NO_ANSWER.startsWith("Failed"));
+        // Real errors are still "Failed: ...".
+        for (int code : new int[] {1, 2, 3, 4, 6, 9}) {
+            check(SendReasons.radioFailure(code).startsWith("Failed: "));
+        }
+    }
+
+    /** One READY session; returns the session with the engine's chat mode set for {@code op}. */
+    private static RadioSession readySession(Engine engine, int op) {
+        engine.onLinkUp(1_000L);
+        RadioSession session = new RadioSession(engine);
+        long now = 10_000L + handshakeOnFakeClock(session, 10_000L);
+        engine.selectChannel(1);
+        engine.setPluginOnlyChat(op == 62);
+        return session;
+    }
+
+    static void f2SendsAreNeverRetried() {
+        for (int op : new int[] {62, 3}) {
+            // Timeout: the radio never answers.
+            Engine engine = new Engine();
+            RadioSession session = readySession(engine, op);
+            long now = 200_000L;
+            queueSend(engine, op, "once", now);
+            session.tick(now + 100);
+            byte[] first = session.pollWrite();
+            check(first != null && (first[0] & 0xFF) == op);
+            int writes = 1;
+            long t = now + 100;
+            for (int i = 0; i < 60; i++) {
+                t += 1_000L;
+                session.tick(t);
+                byte[] more = session.pollWrite();
+                if (more != null) {
+                    check("retry of op " + (more[0] & 0xFF), (more[0] & 0xFF) != 62 && (more[0] & 0xFF) != 3);
+                    session.onNotification(new byte[] {Companion.PACKET_OK}, t + 5);
+                }
+            }
+            eq(SendReasons.NO_ANSWER, engine.lastChatResult());
+            check(engine.counters().get("command_timeout") >= 1);
+            eq(0, engine.queued());
+            // Every error code, including TABLE_FULL (3), which used to be retried once for 62.
+            for (int code = 1; code <= 6; code++) {
+                Engine e = new Engine();
+                RadioSession s = readySession(e, op);
+                long n = 300_000L;
+                queueSend(e, op, "err" + code, n);
+                s.tick(n + 100);
+                byte[] out = s.pollWrite();
+                check(out != null && (out[0] & 0xFF) == op);
+                s.onNotification(new byte[] {Companion.PACKET_ERROR, (byte) code}, n + 150);
+                check(e.lastChatResult().startsWith("Failed: "));
+                long u = n + 150;
+                for (int i = 0; i < 20; i++) {
+                    u += 500L;
+                    s.tick(u);
+                    byte[] more = s.pollWrite();
+                    if (more != null) {
+                        check("retry of op " + (more[0] & 0xFF) + " after error " + code,
+                                (more[0] & 0xFF) != 62 && (more[0] & 0xFF) != 3);
+                        s.onNotification(new byte[] {Companion.PACKET_OK}, u + 5);
+                    }
+                }
+                eq(0, e.queued());
+                eq(1L, e.counters().get("chat_send_failed"));
+            }
+        }
+    }
+
+    private static void queueSend(Engine engine, int op, String text, long now) {
+        Engine.Send send = op == 62
+                ? engine.sendChat(Mctak.SCOPE_ALL, 0, "", text, now)
+                : engine.sendNativeChannelText(text, now);
+        eq("QUEUED", send.status);
     }
 
     private static byte[] pli(int sender, int seq) {

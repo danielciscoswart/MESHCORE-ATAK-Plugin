@@ -32,8 +32,8 @@ public final class Governor {
     }
 
     private final Counters counters;
-    private final double duty;
-    private final int capacityMs;
+    private double duty;
+    private int capacityMs;
     private double tokens;
     private long lastRefillMs;
     private long lastEmitMs = Long.MIN_VALUE / 4;
@@ -47,6 +47,29 @@ public final class Governor {
         this.capacityMs = Airtime.bucketCapacityMs(duty);
         this.tokens = capacityMs;
         this.lastRefillMs = nowMs;
+    }
+
+    /**
+     * F1: one bucket lives across links. A new radio changes the duty cycle (from its
+     * frequency) and the capacity, but the token level stays, capped at the new capacity.
+     * Tokens earned so far at the old rate are credited first.
+     */
+    public void retune(int freqKhz, long nowMs) {
+        refill(nowMs);
+        this.duty = Airtime.duty(freqKhz);
+        this.capacityMs = Airtime.bucketCapacityMs(duty);
+        this.tokens = Math.min(tokens, capacityMs);
+    }
+
+    /** F1: drop everything waiting (P0, P1, P2). The token level is not touched. */
+    public void clearQueues() {
+        p0.clear();
+        p1.clear();
+        p2.clear();
+    }
+
+    public int capacityMs() {
+        return capacityMs;
     }
 
     public double duty() {

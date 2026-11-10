@@ -84,7 +84,13 @@ public final class MeshCoreAtakPlugin implements IPlugin {
     private AlertDialog dialog;
     private boolean running;
     private boolean linkWanted;
-    private boolean watchGeoChat;
+    /**
+     * F3: copying ATAK GeoChat onto the radio is switched off in v7.2. It would send chats meant
+     * for TAK-server users to everyone who holds the radio channel. The code stays; the checkbox
+     * is hidden (visibility gone) and this flag keeps the copy from ever turning on.
+     */
+    private static final boolean GEOCHAT_COPY_AVAILABLE = false;
+    private boolean watchGeoChat = false;
     private boolean watchRegistered;
     /** True while the code (not the user) changes a checkbox, so its listener does nothing. */
     private boolean syncingViews;
@@ -377,6 +383,7 @@ public final class MeshCoreAtakPlugin implements IPlugin {
             sendButton = send;
             CheckBox watch = root.findViewById(dev.meshcore.atak.plugin.R.id.meshcore_watch);
             watchBox = watch;
+            watch.setVisibility(View.GONE);
             connect.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View view) {
@@ -1176,6 +1183,9 @@ public final class MeshCoreAtakPlugin implements IPlugin {
     }
 
     private void setWatchGeoChat(boolean enabled) {
+        if (enabled && !GEOCHAT_COPY_AVAILABLE) {
+            enabled = false;
+        }
         watchGeoChat = enabled;
         if (geoChatWatch == null) {
             return;

@@ -114,6 +114,35 @@ for needed in ("refuseUnsafeChannel()", "maxNativeTextBytes", "tooLong"):
         raise SystemExit("native send path is missing " + needed)
 if "boolean pluginOnlyChat = true;" not in engine_src:
     raise SystemExit("the Plugin users only switch must default to ON")
+# v7.2 review fixes (F1 to F3).
+if "governor = null" in engine_src or "new Governor(" in engine_src.replace("governor = new Governor(counters, DEFAULT_FREQ_KHZ, nowMs);", "").replace("governor = new Governor(counters, info.freqKhz, nowMs);", ""):
+    raise SystemExit("F1: Engine must keep one Governor across links (no governor = null, no extra new Governor)")
+if "governor.retune(info.freqKhz, nowMs)" not in engine_src or "governor.clearQueues()" not in engine_src or "self = null;" not in engine_src:
+    raise SystemExit("F1: link up must clear queues and self; SELF_INFO must retune the bucket")
+session_src = (root / "src/main/java/dev/meshcore/atak/transport/RadioSession.java").read_text()
+if "table_full_retry" in session_src or "tableFullRetries < " in session_src:
+    raise SystemExit("F2: sends (3 and 62) must never be retried after an error")
+reasons = (root / "src/main/java/dev/meshcore/atak/engine/SendReasons.java").read_text()
+if "No answer from radio: it may have been sent. Check before resending." not in reasons:
+    raise SystemExit("F2: the no-answer sentence is missing")
+if "Failed: radio did not answer" in reasons + text + engine_src:
+    raise SystemExit("F2: a timeout must not say Failed")
+layout_text = (root / "app/src/main/res/layout/meshcore_pane.xml").read_text()
+import re
+watch = re.search(r'<CheckBox\s+android:id="@\+id/meshcore_watch"(.*?)/>', layout_text, re.S)
+if not watch:
+    raise SystemExit("F3: watch checkbox not found in the layout")
+if 'android:visibility="gone"' not in watch.group(1) or 'android:checked="false"' not in watch.group(1):
+    raise SystemExit("F3: the GeoChat copy checkbox must be visibility gone and unchecked by default")
+if "android:maxLines=\"2\"" not in layout_text[layout_text.index("meshcore_status_line"):][:400]:
+    raise SystemExit("F2: the status line must allow two lines for the no-answer text")
+if "GEOCHAT_COPY_AVAILABLE = false" not in text or "private boolean watchGeoChat = false;" not in text:
+    raise SystemExit("F3: GeoChat copy must be off by default and not available")
+if "watch.setChecked(true)" in text or "watchBox.setChecked(true)" in text or "watch.setVisibility(View.VISIBLE)" in text:
+    raise SystemExit("F3: the GeoChat copy checkbox must never be shown or ticked by code")
+set_watch = text[text.index("private void setWatchGeoChat("):][:260]
+if "!GEOCHAT_COPY_AVAILABLE" not in set_watch:
+    raise SystemExit("F3: setWatchGeoChat must refuse to turn the copy on")
 manifest_text = manifest.read_text()
 if "@mipmap/ic_launcher" not in manifest_text or "ic_meshcore" in manifest_text:
     raise SystemExit("manifest icon is not the png mipmap")

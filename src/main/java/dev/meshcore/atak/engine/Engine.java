@@ -138,6 +138,7 @@ public final class Engine {
 
     private Link link = Link.DISCONNECTED;
     private Governor governor;
+    static final int DEFAULT_FREQ_KHZ = 910_525;
     private Companion.SelfInfo self;
     private final Map<Integer, Companion.ChannelView> channels = new LinkedHashMap<>();
     private Integer selected;
@@ -304,7 +305,14 @@ public final class Engine {
         // a channel slot that may now mean something else.
         channels.clear();
         clearChannelSelection("new session");
-        governor = new Governor(counters, self == null ? 910_525 : self.freqKhz, nowMs);
+        // F1: nothing from the previous radio (sender id, node name length) is used before the
+        // new SELF_INFO arrives. The airtime bucket is kept: reconnecting must not refill it.
+        self = null;
+        if (governor == null) {
+            governor = new Governor(counters, DEFAULT_FREQ_KHZ, nowMs);
+        } else {
+            governor.clearQueues();
+        }
         log.add("link_connecting");
     }
 
@@ -316,7 +324,10 @@ public final class Engine {
         reconnects++;
         counters.inc("reconnect");
         clearChannelSelection("link lost");
-        governor = null;
+        // F1: only the queues go. The token bucket stays.
+        if (governor != null) {
+            governor.clearQueues();
+        }
         log.add("link_lost");
     }
 
@@ -341,6 +352,9 @@ public final class Engine {
             self = info;
             if (governor == null) {
                 governor = new Governor(counters, info.freqKhz, nowMs);
+            } else {
+                // F1: duty cycle from the new radio's frequency; token level kept, capped.
+                governor.retune(info.freqKhz, nowMs);
             }
             link = Link.READY;
             log.add("ready sender=" + Bytes.hex8(info.sender) + " radio=" + info.freqKhz
@@ -550,7 +564,7 @@ public final class Engine {
 
     /** E10: the reason for a refusal that comes from missing radio or channel state. */
     private Send refusedNotReady() {
-        String why = self == null || governor == null
+        String why = self == null || governor == null || link != Link.READY
                 ? SendReasons.NOT_READY
                 : SendReasons.NO_CHANNEL;
         return new Send("REFUSED", "radio or channel not ready", why);
@@ -833,6 +847,15 @@ public final class Engine {
         List<Inbound> copy = new ArrayList<>(inbound);
         inbound.clear();
         return copy;
+    }
+
+    /** F1: airtime tokens left in the one bucket that lives across links, or -1 before any link. */
+    public int airtimeTokensMs() {
+        return governor == null ? -1 : governor.tokensMs();
+    }
+
+    public int airtimeCapacityMs() {
+        return governor == null ? -1 : governor.capacityMs();
     }
 
     public int queued() {

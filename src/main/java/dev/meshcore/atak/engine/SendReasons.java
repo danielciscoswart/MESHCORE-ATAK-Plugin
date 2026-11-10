@@ -18,12 +18,19 @@ public final class SendReasons {
      */
     public static final String SENT_TO_RADIO = "Sent to radio";
 
+    /**
+     * F2: a send command that got no answer. The radio may well have transmitted, so this is
+     * not "Failed": the user must look at the channel before sending again. 68 characters, so
+     * it fits a 70-character toast whole.
+     */
+    public static final String NO_ANSWER = "No answer from radio: it may have been sent. Check before resending.";
+
     private SendReasons() {}
 
     /** "Failed: reason" for a radio error code from the companion protocol (firmware error codes). */
     public static String radioFailure(int code) {
         switch (code) {
-            case -1: return "Failed: radio did not answer";
+            case -1: return NO_ANSWER;
             case 1: return "Failed: radio does not support this command";
             case 2: return "Failed: channel slot not found on the radio";
             case 3: return "Failed: radio queue is full";

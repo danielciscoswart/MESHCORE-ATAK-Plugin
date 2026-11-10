@@ -72,6 +72,11 @@ public final class AllTests {
         test("E10 refusals in both modes", V72Checks::e10RefusalsInBothModes);
         test("private encrypted channels work in both modes", V72Checks::privateChannelsWorkInBothModes);
         test("opcode allowlist", V72Checks::opcodeAllowlist);
+        test("F1 airtime bucket survives reconnect", V72Checks::f1BucketSurvivesReconnect);
+        test("F1 duty from new radio, tokens kept and capped", V72Checks::f1DutyFromNewRadioKeepsTokens);
+        test("F1 queues and self info cleared on link", V72Checks::f1QueuesAndSelfClearedOnLink);
+        test("F2 no-answer wording", V72Checks::f2NoAnswerWording);
+        test("F2 cmd 3 and 62 never retried after timeout or error", V72Checks::f2SendsAreNeverRetried);
         test("optional mctak fixtures", AllTests::fixtures);
         test("optional official meshcore tree", TransportChecks::officialTree);
         System.out.println("PASSED " + passed + " FAILED " + failed + " SKIPPED " + skipped);

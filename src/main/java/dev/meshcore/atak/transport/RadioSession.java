@@ -230,13 +230,8 @@ public final class RadioSession {
             } else if (code != RadioLimits.ERR_TABLE_FULL) {
                 engine.noteTransportStatus("RADIO_ERROR_" + code);
             }
-            if (cmdByte == Companion.CMD_SEND_CHANNEL_DATA && code == RadioLimits.ERR_TABLE_FULL
-                    && tableFullRetries < 1) {
-                retryHold = cmd;
-                tableFullRetries++;
-                note("table_full_retry");
-                return;
-            }
+            // F2: a send (3 or 62) is never retried automatically after an error or a timeout. A
+            // second copy could land on the channel twice. The user decides.
             tableFullRetries = 0;
             if (cmdByte == Companion.CMD_SEND_CHANNEL_DATA || cmdByte == Companion.CMD_SEND_CHANNEL_TXT) {
                 engine.onChannelDataReply(code < 0 ? -2 : code);

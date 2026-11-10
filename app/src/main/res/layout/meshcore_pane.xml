@@ -66,8 +66,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:ellipsize="end"
-            android:maxLines="1"
-            android:singleLine="true"
+            android:maxLines="2"
             android:paddingTop="2dp"
             android:text="@string/status_line_idle"
             android:textSize="14sp" />
@@ -172,6 +171,7 @@
                 android:id="@+id/meshcore_watch"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:visibility="gone"
                 android:checked="false"
                 android:text="@string/watch_geochat"
                 android:textSize="12sp" />

@@ -6,6 +6,8 @@ versionCode 9, versionName 0.7.2, on-screen tag "v7.2".
 
 Nothing was uploaded to TAK, GitHub, Claude or anywhere else. No message was sent. Nothing was run on a phone or radio.
 
+**Review fixes F1 to F3 (after Claude's review of v7.2) are in `V7_2_F_CHANGES.md`. Where this file and that one differ, that one is newer.**
+
 ## Status of each item
 
 | Item | Status |
@@ -70,12 +72,12 @@ The JVM optional-tree test (run with `MESHCORE_ROOT`) asserts these strings in t
 - Changing the radio or channel, a new link, or a lost link turns position and GeoChat copying off and the chat switch back ON. The channel choice is not saved.
 - Additions beyond the E list (please review):
   - Inbound MCTAK data with no chosen channel is dropped and counted (`data_no_channel`). Without this, with auto-select gone, MCTAK from any channel including Public would have become CoT.
-  - The Governor queue is replaced on link up and cleared on link lost, so frames carrying a stale channel index cannot go out after a reconnect.
+  - The Governor queues are cleared on link up and on link lost, so frames carrying a stale channel index cannot go out after a reconnect. (The first v7.2 build also replaced the whole Governor, which refilled the airtime bucket; fixed in F1, see `V7_2_F_CHANGES.md`.)
 - Tests: `e2NoAutomaticChannel`, `e2OptInsFollowTheChannel`, updated `PluginChecks`/`TransportChecks` (they used `selectFirstTeamChannel`).
 
 ## E3 Storage
 - Files: `plugin/KeyValueStore.java`, `plugin/PluginState.java` (new); `MeshCoreAtakPlugin.PrefsStore` (SharedPreferences "meshcore_atak_plugin" from `MapView.getMapView().getContext()`).
-- Holds `mctak_seq`, `radio_address`, `radio_name`. The sequence is written only when it changes; a failure is counted once per value (`sequence_store_failed`) and the exception class and message are kept in `PluginState.lastError()` and shown in the diag.
+- Holds `mctak_seq`, `radio_address`, `radio_name`. These live in ATAK's own preferences (`meshcore_atak_plugin`), not in the plugin's private data, so they survive an uninstall of the plugin. They are only a sequence number, a Bluetooth address and a name; no key, PIN or message. The sequence is written only when it changes; a failure is counted once per value (`sequence_store_failed`) and the exception class and message are kept in `PluginState.lastError()` and shown in the diag.
 - `pluginContext.getFilesDir()` is gone; a source check fails if it is used. `restoreSequence()` stays in `onStart`, not in the constructor (checked).
 - The cause of v7.1's `sequence_store_failed` is very likely the unwritable `getFilesDir()` in ATAK's process, but that is not proven; the diag will now show the real exception.
 - The manifest did not need to change (SharedPreferences needs no permission).
