@@ -57,23 +57,23 @@ final class V72Checks {
     static void e1RadioChoice() {
         eq(RadioChoice.Plan.CHOOSE, RadioChoice.plan(null, false));
         eq(RadioChoice.Plan.CHOOSE, RadioChoice.plan("", true));
-        eq(RadioChoice.Plan.DIRECT_SAVED, RadioChoice.plan("AA:BB:CC:DD:A2:95", true));
-        eq(RadioChoice.Plan.SCAN_FOR_SAVED, RadioChoice.plan("AA:BB:CC:DD:A2:95", false));
-        eq("...A2:95", RadioChoice.shortAddress("aa:bb:cc:dd:a2:95"));
-        eq("MeshCore-1 ...A2:95", RadioChoice.label("MeshCore-1", "AA:BB:CC:DD:A2:95"));
-        RadioChoice.Candidate one = new RadioChoice.Candidate("AA:BB:CC:DD:A2:95", "MeshCore-1", -61, true);
+        eq(RadioChoice.Plan.DIRECT_SAVED, RadioChoice.plan("AA:BB:CC:DD:EE:FF", true));
+        eq(RadioChoice.Plan.SCAN_FOR_SAVED, RadioChoice.plan("AA:BB:CC:DD:EE:FF", false));
+        eq("...EE:FF", RadioChoice.shortAddress("aa:bb:cc:dd:ee:ff"));
+        eq("MeshCore-1 ...EE:FF", RadioChoice.label("MeshCore-1", "AA:BB:CC:DD:EE:FF"));
+        RadioChoice.Candidate one = new RadioChoice.Candidate("AA:BB:CC:DD:EE:FF", "MeshCore-1", -61, true);
         RadioChoice.Candidate two = new RadioChoice.Candidate("AA:BB:CC:DD:00:11", "MeshCore-2", -40, false);
-        check(one.line().contains("MeshCore-1") && one.line().contains("-61") && one.line().contains("...A2:95")
+        check(one.line().contains("MeshCore-1") && one.line().contains("-61") && one.line().contains("...EE:FF")
                 && one.line().contains("paired: yes"));
         check(two.line().contains("paired: no"));
         // Sorting only orders the dialog. Both radios stay listed and nothing is picked.
         List<RadioChoice.Candidate> sorted = RadioChoice.byStrength(Arrays.asList(one, two));
         eq(2, sorted.size());
         eq("MeshCore-2", sorted.get(0).name);
-        check(RadioChoice.sameAddress("aa:bb:cc:dd:a2:95", "AA:BB:CC:DD:A2:95"));
+        check(RadioChoice.sameAddress("aa:bb:cc:dd:ee:ff", "AA:BB:CC:DD:EE:FF"));
         check(!RadioChoice.looksLikeAddress("garbage"));
         check(!RadioChoice.looksLikeAddress("AA:BB:CC:DD:A2"));
-        check(RadioChoice.looksLikeAddress("aa:bb:cc:dd:a2:95"));
+        check(RadioChoice.looksLikeAddress("aa:bb:cc:dd:ee:ff"));
         // CHOOSE stage: its own label, its own time limit, and a tick cannot end it early.
         LinkMachine machine = new LinkMachine();
         check(machine.enter(LinkMachine.State.SCAN, 1_000L, "scan", LinkMachine.NO_STATUS));
@@ -234,16 +234,16 @@ final class V72Checks {
         eq(1L, e2.counters().get("sequence_store_failed"));
         check(bad.lastError().contains("IOException") && bad.lastError().contains("read-only"));
         // Radio memory: save, read, corrupt value ignored, forget.
-        check(state.saveRadio("aa:bb:cc:dd:a2:95", "MeshCore-1"));
-        eq("AA:BB:CC:DD:A2:95", state.savedRadioAddress());
+        check(state.saveRadio("aa:bb:cc:dd:ee:ff", "MeshCore-1"));
+        eq("AA:BB:CC:DD:EE:FF", state.savedRadioAddress());
         eq("MeshCore-1", state.savedRadioName());
         store.map.put("radio_address", "not-an-address");
         eq(null, state.savedRadioAddress());
-        state.saveRadio("AA:BB:CC:DD:A2:95", "MeshCore-1");
+        state.saveRadio("AA:BB:CC:DD:EE:FF", "MeshCore-1");
         state.forgetRadio();
         eq(null, state.savedRadioAddress());
         // A store that cannot write is reported, not thrown.
-        check(!bad.saveRadio("AA:BB:CC:DD:A2:95", "x"));
+        check(!bad.saveRadio("AA:BB:CC:DD:EE:FF", "x"));
         check(failing.map.isEmpty());
     }
 

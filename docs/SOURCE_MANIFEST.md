@@ -1,6 +1,6 @@
 # Source, version, and license manifest
 
-Inspection date: 2026-11-08. Clones were shallow checkouts under `/tmp/refs` in the build environment. They are not vendored and were not modified. This continuation re-read the same pins. Nothing in those clones was edited.
+Inspection date: 2026-11-08. Clones were shallow checkouts in a temporary directory. They are not vendored and were not modified. This continuation re-read the same pins. Nothing in those clones was edited.
 
 ## Authority
 

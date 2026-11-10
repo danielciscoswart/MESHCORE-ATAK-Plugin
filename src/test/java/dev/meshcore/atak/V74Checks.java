@@ -31,7 +31,7 @@ final class V74Checks {
         return b;
     }
 
-    /** The Ciscokid-ATAK table from the 2026-11-10 phone test: Public (0) and the private channel (1). */
+    /** A typical channel table: Public (0) and one private channel (1). */
     private static PluginHost phoneHost() {
         PluginHost host = new PluginHost();
         host.onCreate();
@@ -41,9 +41,9 @@ final class V74Checks {
         engine.setNowSeconds(1_800_000_000L);
         byte[] key = new byte[32];
         Bytes.putRaw4(key, 0, 0x11111111);
-        engine.receiveFrame(Companion.selfInfo(key, 910_525, 62_500, 8, 5, "Ciscokid-ATAK"), T0);
+        engine.receiveFrame(Companion.selfInfo(key, 910_525, 62_500, 8, 5, "MeshCore-Radio-A"), T0);
         engine.receiveFrame(Companion.channelInfo(0, "Public", Companion.PUBLIC_CHANNEL_SECRET), T0);
-        engine.receiveFrame(Companion.channelInfo(1, "CombatClubMesh", KEY_A), T0);
+        engine.receiveFrame(Companion.channelInfo(1, "MyPrivateChannel", KEY_A), T0);
         engine.receiveFrame(Companion.channelInfo(3, "ops", KEY_B), T0);
         eq("OK", engine.selectChannel(1).status);
         return host;
@@ -202,7 +202,7 @@ final class V74Checks {
      */
     static void j2NativeChannelFrameFromFirmwareBytes() {
         // v3 (app_target_ver >= 3): {0x11, snr*4, 0, 0, channel_idx, path_len, txt_type, ts u32le, text}
-        byte[] text = "Ciscokid: Hello?".getBytes(StandardCharsets.UTF_8);
+        byte[] text = "Peer-One: Hello?".getBytes(StandardCharsets.UTF_8);
         byte[] v3 = new byte[11 + text.length];
         v3[0] = 0x11;
         v3[1] = (byte) 0x28;   // snr 10 dB * 4
@@ -220,7 +220,7 @@ final class V74Checks {
         eq(255, parsed.pathLen);
         eq(0, parsed.txtType);
         eq(0x65302010L, parsed.senderTimestamp);
-        eq("Ciscokid: Hello?", parsed.text);
+        eq("Peer-One: Hello?", parsed.text);
         // v1 (app_target_ver < 3): {0x08, channel_idx, path_len, txt_type, ts u32le, text}
         byte[] v1 = new byte[8 + text.length];
         v1[0] = 0x08;
@@ -232,7 +232,7 @@ final class V74Checks {
         Companion.NativeText old = Companion.parseNativeText(v1);
         check(old != null);
         eq(1, old.channel);
-        eq("Ciscokid: Hello?", old.text);
+        eq("Peer-One: Hello?", old.text);
         // The firmware reports 0xFF when it cannot find the slot (findChannelIdx returns -1).
         v3[4] = (byte) 0xFF;
         eq(255, Companion.parseNativeText(v3).channel);
@@ -241,9 +241,9 @@ final class V74Checks {
     static void j2SlotIsCountedAndExplainedWithoutText() {
         PluginHost host = phoneHost();
         Engine engine = host.engine();
-        byte[] chosen = frameV3(1, "Ciscokid: Hello?");
-        byte[] publicSlot = frameV3(0, "Ciscokid: Hello?");
-        byte[] unknown = frameV3(255, "Ciscokid: Hello?");
+        byte[] chosen = frameV3(1, "Peer-One: Hello?");
+        byte[] publicSlot = frameV3(0, "Peer-One: Hello?");
+        byte[] unknown = frameV3(255, "Peer-One: Hello?");
         engine.receiveFrame(chosen, 2_000L);
         eq("frame=0x11 channel=1 selected=1 path=255 bytes=" + chosen.length, engine.lastNativeNote());
         eq(1, engine.drainRoomMessages().size());

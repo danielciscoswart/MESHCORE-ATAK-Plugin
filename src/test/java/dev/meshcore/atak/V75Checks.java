@@ -570,7 +570,7 @@ final class V75Checks {
     static void repeatedNativeMessageIsShownOnce() {
         PluginHost host = hostOnChannel1();
         Engine engine = host.engine();
-        byte[] frame = Companion.channelTextV3(0, 1, 2, 1_800_000_100L, "CiscoKid: You read this?");
+        byte[] frame = Companion.channelTextV3(0, 1, 2, 1_800_000_100L, "Peer-One: You read this?");
         // The 2026-11-10 report: one message, three copies.
         engine.receiveFrame(frame.clone(), 2_000L);
         engine.receiveFrame(frame.clone(), 3_000L);
@@ -587,20 +587,20 @@ final class V75Checks {
     static void dedupKeyIsChannelTimestampAndText() {
         PluginHost host = hostOnChannel1();
         Engine engine = host.engine();
-        engine.receiveFrame(Companion.channelTextV3(0, 1, 2, 1_800_000_100L, "CiscoKid: hi"), 2_000L);
+        engine.receiveFrame(Companion.channelTextV3(0, 1, 2, 1_800_000_100L, "Peer-One: hi"), 2_000L);
         // A new timestamp (the sender really sent it again) is shown.
-        engine.receiveFrame(Companion.channelTextV3(0, 1, 2, 1_800_000_160L, "CiscoKid: hi"), 2_100L);
+        engine.receiveFrame(Companion.channelTextV3(0, 1, 2, 1_800_000_160L, "Peer-One: hi"), 2_100L);
         // The same timestamp with other text is shown.
-        engine.receiveFrame(Companion.channelTextV3(0, 1, 2, 1_800_000_100L, "CiscoKid: hello"), 2_200L);
+        engine.receiveFrame(Companion.channelTextV3(0, 1, 2, 1_800_000_100L, "Peer-One: hello"), 2_200L);
         // The same text from another sender (the sender name is part of the radio text) is shown.
         engine.receiveFrame(Companion.channelTextV3(0, 1, 2, 1_800_000_100L, "Bo: hi"), 2_300L);
         // The same sender, text and timestamp on another channel slot is shown (and stays in the pane).
-        engine.receiveFrame(Companion.channelTextV3(0, 0, 2, 1_800_000_100L, "CiscoKid: hi"), 2_400L);
+        engine.receiveFrame(Companion.channelTextV3(0, 0, 2, 1_800_000_100L, "Peer-One: hi"), 2_400L);
         eq(4, engine.drainRoomMessages().size());
         eq(0L, engine.counters().get("room_msg_dup_dropped"));
         eq(5, engine.nativeInbox().size());
         // A repeat on Public is dropped from the pane too.
-        engine.receiveFrame(Companion.channelTextV3(0, 0, 2, 1_800_000_100L, "CiscoKid: hi"), 2_500L);
+        engine.receiveFrame(Companion.channelTextV3(0, 0, 2, 1_800_000_100L, "Peer-One: hi"), 2_500L);
         eq(5, engine.nativeInbox().size());
         eq(1L, engine.counters().get("room_msg_dup_dropped"));
         // A repeat of a direct message too.
@@ -615,7 +615,7 @@ final class V75Checks {
         // Window: first seen at t, shown again once more than 10 minutes have passed.
         PluginHost host = hostOnChannel1();
         Engine engine = host.engine();
-        byte[] frame = Companion.channelTextV3(0, 1, 2, 1_800_000_100L, "CiscoKid: later");
+        byte[] frame = Companion.channelTextV3(0, 1, 2, 1_800_000_100L, "Peer-One: later");
         engine.receiveFrame(frame.clone(), 1_000L);
         engine.receiveFrame(frame.clone(), 1_000L + 600_000L);
         eq(1L, engine.counters().get("room_msg_dup_dropped"));
@@ -649,7 +649,7 @@ final class V75Checks {
     static void recentNativeNotesShowTimestampAndRepeatButNeverText() {
         PluginHost host = hostOnChannel1();
         Engine engine = host.engine();
-        byte[] frame = Companion.channelTextV3(0, 1, 2, 1_800_000_100L, "CiscoKid: You read this?");
+        byte[] frame = Companion.channelTextV3(0, 1, 2, 1_800_000_100L, "Peer-One: You read this?");
         engine.receiveFrame(frame.clone(), 2_000L);
         engine.receiveFrame(frame.clone(), 2_100L);
         List<String> notes = engine.recentNativeNotes();
@@ -659,7 +659,7 @@ final class V75Checks {
         check(!notes.get(0).contains("DUP"));
         check(notes.get(1).endsWith(" DUP"));
         for (String line : notes) {
-            check(!line.contains("read this") && !line.contains("CiscoKid"));
+            check(!line.contains("read this") && !line.contains("Peer-One"));
         }
     }
 
@@ -967,9 +967,9 @@ final class V75Checks {
         engine.setNowSeconds(1_800_000_000L);
         byte[] key = new byte[32];
         Bytes.putRaw4(key, 0, 0x11111111);
-        engine.receiveFrame(Companion.selfInfo(key, 910_525, 62_500, 8, 5, "Ciscokid-ATAK"), 1_000L);
+        engine.receiveFrame(Companion.selfInfo(key, 910_525, 62_500, 8, 5, "MeshCore-Radio-A"), 1_000L);
         engine.receiveFrame(Companion.channelInfo(0, "Public", Companion.PUBLIC_CHANNEL_SECRET), 1_000L);
-        engine.receiveFrame(Companion.channelInfo(1, "CombatClubMesh", SECRET), 1_000L);
+        engine.receiveFrame(Companion.channelInfo(1, "MyPrivateChannel", SECRET), 1_000L);
         eq("OK", engine.selectChannel(1).status);
         return host;
     }

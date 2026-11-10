@@ -508,7 +508,7 @@ public final class MeshCoreAtakPlugin implements IPlugin {
             }
             return;
         }
-        // Header first: this is what Daniel sees without scrolling.
+        // Header first: this is what the user sees without scrolling.
         if (connectButton != null) {
             connectButton.setText(radio.buttonLabel(now));
         }

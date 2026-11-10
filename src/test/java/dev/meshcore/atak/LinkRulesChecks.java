@@ -21,7 +21,7 @@ import java.util.List;
 final class LinkRulesChecks {
     private LinkRulesChecks() {}
 
-    /** C1: the held-by-another-app decision, and the text Daniel gets. */
+    /** C1: the held-by-another-app decision, and the text the user gets. */
     static void c1HeldByAnotherApp() {
         List<String> connected = Arrays.asList("AA:BB:CC:DD:EE:01", "aa:bb:cc:dd:ee:02");
         check(LinkRules.heldByAnotherApp(connected, "AA:BB:CC:DD:EE:02"));

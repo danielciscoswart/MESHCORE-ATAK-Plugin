@@ -52,7 +52,7 @@ public final class RadioChoice {
         return savedIsPaired ? Plan.DIRECT_SAVED : Plan.SCAN_FOR_SAVED;
     }
 
-    /** "...A2:95": the last two address bytes, enough to tell two radios apart. */
+    /** "...EE:FF": the last two address bytes, enough to tell two radios apart. */
     public static String shortAddress(String address) {
         if (address == null || address.length() < 5) {
             return "";

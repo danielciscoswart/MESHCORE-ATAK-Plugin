@@ -5,7 +5,7 @@
 # name the TAK pipeline uses for APK names. Neither archive is an upload.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DEST="${1:-/opt/cursor/artifacts}"
+DEST="${1:-$ROOT/build/export}"
 mkdir -p "$DEST"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
