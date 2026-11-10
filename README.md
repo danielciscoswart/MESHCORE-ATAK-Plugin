@@ -46,6 +46,7 @@ The BLE adapter is compiled separately. It needs the public Android 35 platform 
 | `src/main/java/dev/meshcore/atak/atak` | Named ATAK integration points. No SDK types |
 | `src/test/java` | Unit, fuzz, simulated-radio, session, and lifecycle tests |
 | `FEATURE_PARITY.md` | Implemented, partial, unsupported, unverified |
+| `docs/V7_2_CHANGES.md` | v7.2 changes against v7.1, item by item (E1 to E10) |
 | `docs/SOURCE_MANIFEST.md` | Repos, commits, licenses, and the reuse decision |
 | `docs/REA_LOG.md` | Which REA steps actually ran |
 
