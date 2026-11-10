@@ -45,6 +45,48 @@ public final class Companion {
     public static final int PACKET_CHANNEL_MSG_V3 = 0x11;
     public static final int PACKET_MESSAGES_WAITING = 0x83;
 
+    /**
+     * Unsolicited push codes, read from the official firmware
+     * ({@code meshcore-dev/MeshCore} tag companion-v1.18.0 = 81dbae5,
+     * {@code examples/companion_radio/MyMesh.cpp} lines 116-133). All of them are 0x80 or above.
+     * v7.3 counts the ones the plugin does not use and never logs their bytes.
+     * {@code PUSH_CODE_LOG_RX_DATA} (0x88) is one raw copy of every packet the radio hears
+     * ({@code logRxRaw}: snr, rssi, raw bytes), followed by a second frame of just the code byte.
+     * {@code PUSH_CODE_ADVERT} (0x80) is a re-heard advert of a known contact (code plus 32-byte key).
+     */
+    public static final int PUSH_ADVERT = 0x80;
+    public static final int PUSH_LOG_RX_DATA = 0x88;
+    public static final int PUSH_NEW_ADVERT = 0x8A;
+    public static final int PUSH_CONTACTS_FULL = 0x90;
+
+    /**
+     * The firmware's name for an unsolicited push code, lower case, or null when the code is not a
+     * push in companion-v1.18.0. 0x83 (messages waiting) is a push too; the engine handles it
+     * before it asks this method.
+     */
+    public static String pushName(int code) {
+        switch (code & 0xFF) {
+            case 0x80: return "advert";
+            case 0x81: return "path_updated";
+            case 0x82: return "send_confirmed";
+            case 0x83: return "msg_waiting";
+            case 0x84: return "raw_data";
+            case 0x85: return "login_success";
+            case 0x86: return "login_fail";
+            case 0x87: return "status_response";
+            case 0x88: return "log_rx_data";
+            case 0x89: return "trace_data";
+            case 0x8A: return "new_advert";
+            case 0x8B: return "telemetry_response";
+            case 0x8C: return "binary_response";
+            case 0x8D: return "path_discovery_response";
+            case 0x8E: return "control_data";
+            case 0x8F: return "contact_deleted";
+            case 0x90: return "contacts_full";
+            default: return null;
+        }
+    }
+
     /** Firmware PUBLIC_GROUP_PSK, base64 "izOH6cXN6mrJ5e26oRXNcg==". Well-known, not a private key. */
     public static final byte[] PUBLIC_CHANNEL_SECRET =
             Base64.getDecoder().decode("izOH6cXN6mrJ5e26oRXNcg==");

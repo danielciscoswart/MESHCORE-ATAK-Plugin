@@ -13,6 +13,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.CRC32;
 
 /**
  * SDK-independent bridge: companion radio frames in, CoT events out, and the
@@ -114,12 +115,75 @@ public final class Engine {
         }
     }
 
+    /** G1: the one ATAK chat room the plugin may offer while a private channel is chosen. */
+    public static final class RoomSpec {
+        public final String uid;
+        public final String name;
+        public final String channelName;
+        public final boolean pluginOnly;
+
+        RoomSpec(String uid, String name, String channelName, boolean pluginOnly) {
+            this.uid = uid;
+            this.name = name;
+            this.channelName = channelName;
+            this.pluginOnly = pluginOnly;
+        }
+    }
+
+    /**
+     * G3: one message for the MeshCore room. Always unverified: the sender is a radio node name
+     * or an MCTAK callsign that anyone on the channel can choose. It is shown, never forwarded.
+     */
+    public static final class RoomMessage {
+        public static final String SOURCE_PLUGIN = "plugin";
+        public static final String SOURCE_NATIVE = "meshcore";
+        public static final String LABEL = "(MeshCore, unverified)";
+
+        public final String source;
+        public final String sender;
+        public final String text;
+        public final String id;
+        public final long timeSeconds;
+        public final long receivedMs;
+
+        RoomMessage(String source, String sender, String text, String id, long timeSeconds, long receivedMs) {
+            this.source = source;
+            this.sender = sender;
+            this.text = text;
+            this.id = id;
+            this.timeSeconds = timeSeconds;
+            this.receivedMs = receivedMs;
+        }
+
+        /** Sender as the room shows it: always with the label. */
+        public String senderLabel() {
+            return sender + " " + LABEL;
+        }
+    }
+
+    /** Room messages kept before the host takes them. */
+    public static final int ROOM_INBOX_CAP = 32;
+    static final long ROOM_DEDUP_MS = 600_000L;
+    static final long ROOM_SENT_FALLBACK_MS = 3_000L;
+    static final long NETWORK_CHAT_WINDOW_MS = 300_000L;
+    static final int ROOM_CHANNEL_NAME_CAP = 32;
+
     /** How many native messages the pane keeps and shows. */
     public static final int NATIVE_INBOX_CAP = 10;
     public static final int NATIVE_TEXT_SHOWN_CHARS = 160;
 
     private final Counters counters = new Counters();
-    private final List<String> log = new ArrayList<>();
+    /** The text log is capped: a long session must not grow it without limit (v7.3). */
+    private static final int LOG_CAP = 500;
+    private final List<String> log = new ArrayList<String>() {
+        @Override
+        public boolean add(String line) {
+            if (size() >= LOG_CAP) {
+                remove(0);
+            }
+            return super.add(line);
+        }
+    };
     private final List<Inbound> inbound = new ArrayList<>();
     private final Map<String, Long> seen = new LinkedHashMap<>();
     private final Map<Integer, Integer> pliLastSeq = new LinkedHashMap<>();
@@ -143,10 +207,13 @@ public final class Engine {
     private final Map<Integer, Companion.ChannelView> channels = new LinkedHashMap<>();
     private Integer selected;
     private boolean locationOptIn;
-    private boolean geoChatCopyOptIn;
     private final List<NativeMessage> nativeInbox = new ArrayList<>();
     private final List<NativeMessage> nativeNew = new ArrayList<>();
     private RadioStats lastStats;
+    private final List<RoomMessage> roomInbox = new ArrayList<>();
+    private final Map<String, Long> roomSeen = new LinkedHashMap<>();
+    private final Map<String, Long> roomSentIds = new LinkedHashMap<>();
+    private final Map<String, Long> networkChatSeen = new LinkedHashMap<>();
     private final List<RadioStats> statsHistory = new ArrayList<>();
     private boolean rebootSeen;
     /** E9 toggle: true = plugin-only MCTAK channel data (default), false = native MeshCore channel text. */
@@ -236,36 +303,15 @@ public final class Engine {
     }
 
     /**
-     * Copying ATAK GeoChat onto the radio is opt-in too, and also needs a chosen
-     * channel. Returns false when the request was refused.
-     */
-    public boolean setGeoChatCopy(boolean enabled) {
-        if (enabled && (selected == null || self == null)) {
-            counters.inc("geochat_copy_refused");
-            log.add("geochat_copy_refused");
-            geoChatCopyOptIn = false;
-            return false;
-        }
-        geoChatCopyOptIn = enabled;
-        log.add(enabled ? "geochat_copy_on" : "geochat_copy_off");
-        return true;
-    }
-
-    public boolean geoChatCopyOptIn() {
-        return geoChatCopyOptIn;
-    }
-
-    /**
      * E2: changing the radio or the channel turns every outgoing path off. The
      * user has to opt in again, with a confirmation naming the channel.
      */
     public void clearSendOptIns(String why) {
-        boolean any = locationOptIn || geoChatCopyOptIn;
+        boolean any = locationOptIn;
         // E9: the "Plugin users only" switch is never remembered; it is back ON whenever
         // the radio or the channel changes.
         pluginOnlyChat = true;
         locationOptIn = false;
-        geoChatCopyOptIn = false;
         hasFix = false;
         if (any) {
             counters.inc("send_opt_ins_cleared");
@@ -273,12 +319,13 @@ public final class Engine {
         }
     }
 
-    /** Forget the chosen channel. Position and GeoChat copying go off with it. */
+    /** Forget the chosen channel. Position sending and the MeshCore chat room go off with it. */
     public void clearChannelSelection(String why) {
         if (selected != null) {
             log.add("channel_selection_cleared " + why);
         }
         selected = null;
+        roomInbox.clear();
         clearSendOptIns(why);
     }
 
@@ -401,6 +448,13 @@ public final class Engine {
             acceptNativeText(frame, nowMs);
             return;
         }
+        String push = Companion.pushName(type);
+        if (push != null) {
+            // v7.3: unsolicited radio pushes (raw RX log 0x88, advert 0x80, ...) are counted by
+            // the firmware's own name. Their bytes are never logged or kept.
+            counters.inc("push_" + push);
+            return;
+        }
         Companion.DataRecv recv = Companion.parseChannelData(frame);
         if (recv == null) {
             // OK and error replies are handled by the session; everything else is counted by type.
@@ -449,6 +503,31 @@ public final class Engine {
             nativeNew.remove(0);
         }
         nativeNew.add(message);
+        // G3: native text on the chosen channel also goes into the MeshCore room. Text from any
+        // other channel, and direct messages, stay in the pane only.
+        if (!parsed.direct && selected != null && parsed.channel == selected) {
+            String[] split = splitNativeSender(parsed.text);
+            String key = "n:" + parsed.channel + ":" + parsed.senderTimestamp + ":" + split[0] + ":"
+                    + crc(split[1]);
+            offerRoomMessage(RoomMessage.SOURCE_NATIVE, split[0], split[1], key,
+                    parsed.senderTimestamp, nowMs);
+        } else {
+            counters.inc(parsed.direct ? "native_direct_pane_only" : "native_other_channel_pane_only");
+        }
+    }
+
+    /**
+     * The firmware writes channel text as "&lt;node_name&gt;: &lt;text&gt;" (MyMesh.cpp
+     * sendGroupMessage). Returns {sender, text}. A text with no such prefix has the sender
+     * "unknown". The sender is whatever the radio's owner typed as a node name: unverified.
+     */
+    public static String[] splitNativeSender(String text) {
+        String raw = text == null ? "" : text;
+        int at = raw.indexOf(": ");
+        if (at > 0 && at <= 32) {
+            return new String[] {displayText(raw.substring(0, at)), displayText(raw.substring(at + 2))};
+        }
+        return new String[] {"unknown", displayText(raw)};
     }
 
     /** Control characters out, length capped. Radio text is untrusted display data. */
@@ -516,8 +595,9 @@ public final class Engine {
                     "Not selected: " + view.refusalReason());
         }
         if (selected == null || selected != index) {
-            // E2: a different channel means position and GeoChat copying start over.
+            // E2: a different channel means position sending starts over, and the room is replaced.
             clearSendOptIns("channel changed");
+            roomInbox.clear();
         }
         selected = index;
         log.add("selected_channel " + index);
@@ -820,6 +900,150 @@ public final class Engine {
                 !view.unsafeForTeamTraffic(), view.refusalReason());
     }
 
+    // ---- G1 to G5: the MeshCore chat room -------------------------------------------------
+
+    private static long crcValue(String text) {
+        CRC32 crc = new CRC32();
+        byte[] bytes = (text == null ? "" : text).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        crc.update(bytes, 0, bytes.length);
+        return crc.getValue();
+    }
+
+    /** CRC-32 and byte length of a text. A de-duplication key, not a secret and not a security check. */
+    private static String crc(String text) {
+        int length = (text == null ? "" : text).getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        return Long.toHexString(crcValue(text)) + "/" + length;
+    }
+
+    /** Printable, trimmed, capped channel name for the room title. */
+    static String roomChannelName(String name) {
+        String clean = displayText(name == null ? "" : name).trim();
+        if (clean.isEmpty()) {
+            clean = "channel";
+        }
+        return clean.length() > ROOM_CHANNEL_NAME_CAP ? clean.substring(0, ROOM_CHANNEL_NAME_CAP) : clean;
+    }
+
+    /**
+     * G1: the room the plugin offers right now, or null. It exists only while the link is READY,
+     * the radio's SELF_INFO is in, and a private channel is chosen. The uid holds the channel
+     * slot and a CRC of the channel name; it holds no key and no fingerprint. The name carries
+     * the current mode, "MeshCore: &lt;channel&gt; (plugin only)" or "(MeshCore text)", so nobody
+     * types into the wrong audience; a mode switch renames the room and does not replace it.
+     */
+    public RoomSpec roomSpec() {
+        if (link != Link.READY || self == null || selected == null) {
+            return null;
+        }
+        Companion.ChannelView view = channels.get(selected);
+        if (view == null || view.unsafeForTeamTraffic()) {
+            return null;
+        }
+        String name = roomChannelName(view.name);
+        String uid = "MESHCORE-ROOM-" + selected + "-" + Long.toHexString(crcValue(view.name));
+        String title = "MeshCore: " + name + " (" + (pluginOnlyChat ? "plugin only" : "MeshCore text") + ")";
+        return new RoomSpec(uid, title, name, pluginOnlyChat);
+    }
+
+    /**
+     * G2: a message typed into the room, as ATAK handed it over. Only a message addressed to
+     * exactly the current room is sent, in whatever mode the switch is on. Anything else is
+     * ignored and counted. A message id seen before (ATAK may report one send twice) is dropped.
+     * The reply carries the E10 sentence for every refusal, and never contains the message text.
+     */
+    public Send sendFromRoom(String toRoomUid, String originId, String text, long nowMs) {
+        RoomSpec spec = roomSpec();
+        if (spec == null) {
+            counters.inc("room_send_no_room");
+            Send blocked = refusedNotReady();
+            return new Send("REFUSED", "no MeshCore room", blocked.why);
+        }
+        if (toRoomUid == null || !spec.uid.equals(toRoomUid)) {
+            counters.inc("chat_other_ignored");
+            return new Send("IGNORED", "not the MeshCore room", "");
+        }
+        purge(roomSentIds, nowMs, ROOM_DEDUP_MS);
+        String key = originId != null && !originId.isEmpty() ? "id:" + originId : "text:" + crc(text);
+        Long before = roomSentIds.get(key);
+        if (before != null && (key.startsWith("id:") || nowMs - before <= ROOM_SENT_FALLBACK_MS)) {
+            counters.inc("room_dup_out");
+            return new Send("DUPLICATE", "same message seen twice", "");
+        }
+        if (roomSentIds.size() >= 128) {
+            Iterator<String> it = roomSentIds.keySet().iterator();
+            it.next();
+            it.remove();
+        }
+        roomSentIds.put(key, nowMs);
+        Send send = pluginOnlyChat
+                ? sendChat(Mctak.SCOPE_ALL, 0, "", text, nowMs)
+                : sendNativeChannelText(text, nowMs);
+        counters.inc("QUEUED".equals(send.status) ? "room_send_queued" : "room_send_refused");
+        return send;
+    }
+
+    /**
+     * G4: a chat message ATAK received from the network, seen by the comms logger. Only a hash and
+     * the sender name are kept, for five minutes. A radio message with the same sender and text
+     * inside that window is a copy of one the user already has, and is not shown again.
+     */
+    public void noteNetworkChat(String senderCallsign, String text, long nowMs) {
+        if (senderCallsign == null || senderCallsign.trim().isEmpty() || text == null) {
+            return;
+        }
+        purge(networkChatSeen, nowMs, NETWORK_CHAT_WINDOW_MS);
+        if (networkChatSeen.size() >= 128) {
+            Iterator<String> it = networkChatSeen.keySet().iterator();
+            it.next();
+            it.remove();
+        }
+        networkChatSeen.put(senderCallsign.trim().toLowerCase(java.util.Locale.ROOT) + "|" + crc(text.trim()), nowMs);
+        counters.inc("network_chat_seen");
+    }
+
+    private void offerRoomMessage(String source, String sender, String text, String id, long timeSeconds,
+                                  long nowMs) {
+        if (selected == null) {
+            counters.inc("room_msg_no_channel");
+            return;
+        }
+        String body = displayText(text == null ? "" : text);
+        if (body.trim().isEmpty()) {
+            counters.inc("room_msg_empty");
+            return;
+        }
+        purge(roomSeen, nowMs, ROOM_DEDUP_MS);
+        if (roomSeen.containsKey(id)) {
+            counters.inc("room_dup_in");
+            return;
+        }
+        purge(networkChatSeen, nowMs, NETWORK_CHAT_WINDOW_MS);
+        String netKey = sender.trim().toLowerCase(java.util.Locale.ROOT) + "|" + crc(body.trim());
+        if (networkChatSeen.containsKey(netKey)) {
+            counters.inc("room_dup_network");
+            return;
+        }
+        if (roomSeen.size() >= 256) {
+            Iterator<String> it = roomSeen.keySet().iterator();
+            it.next();
+            it.remove();
+        }
+        roomSeen.put(id, nowMs);
+        if (roomInbox.size() >= ROOM_INBOX_CAP) {
+            roomInbox.remove(0);
+            counters.inc("room_inbox_overflow");
+        }
+        roomInbox.add(new RoomMessage(source, displayText(sender), body, id, timeSeconds, nowMs));
+        counters.inc("room_msg_in");
+    }
+
+    /** Room messages that arrived since the last call, oldest first. The host shows them in the room. */
+    public List<RoomMessage> drainRoomMessages() {
+        List<RoomMessage> out = new ArrayList<>(roomInbox);
+        roomInbox.clear();
+        return out;
+    }
+
     /** Next companion frame the governor would emit, left in the queue. */
     public byte[] previewTx(long nowMs) {
         if (governor == null) {
@@ -936,10 +1160,11 @@ public final class Engine {
                 return;
             }
             chatDedup.put(dedup, now);
-            String destUid = parsed.chat.scope == Mctak.SCOPE_DIRECT
-                    ? Mctak.derivedUid(parsed.chat.dest) : "";
+            // G3: plugin chat from the chosen channel goes into the MeshCore room, never into
+            // ATAK's general chat. It is channel traffic whatever its MCTAK scope says.
             String name = callsigns.getOrDefault(sender, Mctak.derivedUid(sender));
-            inbound.add(new Inbound(Cot.chat(parsed.chat, sender, name, destUid, nowSeconds), "chat"));
+            offerRoomMessage(RoomMessage.SOURCE_PLUGIN, name, parsed.chat.text,
+                    "p:" + dedup, parsed.chat.ts, nowMs);
             maybeReceipt(parsed.chat, sender, nowMs);
             return;
         }

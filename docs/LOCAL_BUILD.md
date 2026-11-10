@@ -54,7 +54,7 @@ The checker needs `aapt2` from Android SDK build-tools (`ANDROID_HOME` or `AAPT2
 
 Do not run `assembleDebug`. A debug package can pick up an automatic debug key, and a debug signature is not a retail ATAK install. Do not set `takDebugKeyFile`. Release has no `signingConfig`. `takdevLint` stays enabled. `minifyEnabled` is true and `android.bundle.storeArchive.enable` is false. JNI packaging is legacy because takdev checks it; there is no NDK version and no native code. The SDK keep file stays on the SDK machine. `isDevKitEnabled()` is false unless `takrepo.url` is set. Leave that URL unset for a local SDK build. The three paths in `local.properties` are `sdk.dir`, `sdkPath`, and `takdev.plugin`.
 
-8. The APK, if the compile succeeds, is an unsigned-or-locally-debug-signed developer build. It has not been loaded into ATAK in this project. A retail ATAK install still needs the Product Center pipeline. Do not install it from this repository's instructions onto a phone as a finished plugin. The pane's MeshCore chat box is the supported outbound chat control. The GeoChat checkbox is experimental and default off.
+8. The APK, if the compile succeeds, is an unsigned-or-locally-debug-signed developer build. It has not been loaded into ATAK in this project. A retail ATAK install still needs the Product Center pipeline. Do not install it from this repository's instructions onto a phone as a finished plugin. From v7.3 the MeshCore chat room in ATAK's chat list and the pane's own chat box are the only outbound chat controls. The v7.2 GeoChat copy is gone.
 
 ## What compile success does not prove
 

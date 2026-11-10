@@ -51,15 +51,18 @@ final class PluginChecks {
         eq("DROP_LOOP", host.offerOutboundCot(inbound, now + 10));
         eq("USE_OPT_IN_BEACON", host.offerOutboundCot(inbound.replace("__meshcore", "other"), now + 10));
 
-        String chat = "<event type=\"b-t-f\"><detail><__chat chatroom=\"All Chat Rooms\"/>"
+        String chat = "<event type=\"b-t-f\" uid=\"GeoChat.a.room.1\"><detail><__chat chatroom=\"All Chat Rooms\"/>"
                 + "<remarks>hello</remarks></detail></event>";
-        eq("QUEUED", host.offerOutboundCot(chat, now + 20));
-        String direct = "<event type=\"b-t-f\"><detail><__chat chatroom=\"MCTAK-01020304\"/>"
-                + "<remarks>psst</remarks></detail></event>";
-        eq("QUEUED", host.offerOutboundCot(direct, now + 30));
-        String huge = "<event type=\"b-t-f\"><detail><__chat chatroom=\"All Chat Rooms\"/>"
+        // v7.3 (G2): a chat event with no destination list never reaches the radio.
+        eq("IGNORED", host.offerOutboundCot(chat, now + 20));
+        eq("IGNORED", host.offerOutboundChat(chat, new String[] {"All Chat Rooms"}, now + 21));
+        eq("IGNORED", host.offerOutboundChat(chat, new String[] {"ANDROID-1234"}, now + 22));
+        eq("IGNORED", host.offerOutboundChat(chat, null, now + 23));
+        String roomUid = engine.roomSpec().uid;
+        eq("QUEUED", host.offerOutboundChat(chat, new String[] {roomUid}, now + 24));
+        String huge = "<event type=\"b-t-f\" uid=\"GeoChat.a.room.2\"><detail><__chat chatroom=\"All Chat Rooms\"/>"
                 + "<remarks>" + "x".repeat(200) + "</remarks></detail></event>";
-        eq("BLOCKED_RADIO_LIMIT", host.offerOutboundCot(huge, now + 40));
+        eq("BLOCKED_RADIO_LIMIT", host.offerOutboundChat(huge, new String[] {roomUid}, now + 40));
 
         String marker = "<event type=\"b-m-p-w\"><point lat=\"1.5\" lon=\"2.5\"/>"
                 + "<detail><contact callsign=\"cache\"/></detail></event>";

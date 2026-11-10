@@ -92,8 +92,8 @@ if "getFilesDir" in text or "selectFirstTeamChannel" in text or "selectFirstTeam
     raise SystemExit("plugin must not use getFilesDir (E3) or pick a channel itself (E2)")
 if text.count("restoreSequence()") < 1 or "restoreSequence()" not in onstart:
     raise SystemExit("onStart must restore the sequence (E3)")
-if 'BUILD_TAG = "v7.2"' not in text:
-    raise SystemExit("on-screen tag must be v7.2")
+if 'BUILD_TAG = "v7.3"' not in text:
+    raise SystemExit("on-screen tag must be v7.3")
 root = java.parents[8]
 engine_src = (root / "src/main/java/dev/meshcore/atak/engine/Engine.java").read_text()
 if "selectFirstTeamChannel" in engine_src:
@@ -129,20 +129,50 @@ if "Failed: radio did not answer" in reasons + text + engine_src:
     raise SystemExit("F2: a timeout must not say Failed")
 layout_text = (root / "app/src/main/res/layout/meshcore_pane.xml").read_text()
 import re
-watch = re.search(r'<CheckBox\s+android:id="@\+id/meshcore_watch"(.*?)/>', layout_text, re.S)
-if not watch:
-    raise SystemExit("F3: watch checkbox not found in the layout")
-if 'android:visibility="gone"' not in watch.group(1) or 'android:checked="false"' not in watch.group(1):
-    raise SystemExit("F3: the GeoChat copy checkbox must be visibility gone and unchecked by default")
 if "android:maxLines=\"2\"" not in layout_text[layout_text.index("meshcore_status_line"):][:400]:
     raise SystemExit("F2: the status line must allow two lines for the no-answer text")
-if "GEOCHAT_COPY_AVAILABLE = false" not in text or "private boolean watchGeoChat = false;" not in text:
-    raise SystemExit("F3: GeoChat copy must be off by default and not available")
-if "watch.setChecked(true)" in text or "watchBox.setChecked(true)" in text or "watch.setVisibility(View.VISIBLE)" in text:
-    raise SystemExit("F3: the GeoChat copy checkbox must never be shown or ticked by code")
-set_watch = text[text.index("private void setWatchGeoChat("):][:260]
-if "!GEOCHAT_COPY_AVAILABLE" not in set_watch:
-    raise SystemExit("F3: setWatchGeoChat must refuse to turn the copy on")
+# v7.3 (G1 to G5): the v7.2 copy-everything GeoChat path is gone and the room is the only chat path.
+host_dir = java.parent
+if (host_dir / "ExperimentalGeoChatWatch.java").exists():
+    raise SystemExit("G2: the old GeoChat watch class must be gone")
+if "meshcore_watch" in layout_text or "watch_geochat" in (root / "app/src/main/res/values/strings.xml").read_text():
+    raise SystemExit("G2: the GeoChat copy checkbox and its text must be gone")
+for banned in ("ExperimentalGeoChatWatch", "watchGeoChat", "GEOCHAT_COPY_AVAILABLE", "setGeoChatCopy", "geoChatCopyOptIn", "offerOutboundCot("):
+    for name, body in (("plugin", text), ("engine", engine_src)):
+        if banned in body:
+            raise SystemExit("G2: " + name + " still has the old copy path: " + banned)
+host_src = (root / "src/main/java/dev/meshcore/atak/plugin/PluginHost.java").read_text()
+if 'engine.sendChat(' in host_src or 'offerChat(' in host_src:
+    raise SystemExit("G2: PluginHost must not send chat itself; only the room path may")
+logger = (host_dir / "MeshCoreRoomLogger.java").read_text()
+chat_room = (host_dir / "AtakChatRoom.java").read_text()
+if "toUids.length != 1" not in logger or "ROOM_UID_PREFIX" not in logger:
+    raise SystemExit("G2: the logger must hold a chat only when it is addressed to exactly the room")
+for banned in ("getExternalDispatcher", "dispatchToBroadcast", "dispatchToContacts", "sendCoTToServersOnly", "sendCoTToEndpoint", "sendMessage("):
+    for name, body in (("logger", logger), ("room", chat_room), ("plugin", text), ("bridge", (host_dir / "AtakCotBridge.java").read_text())):
+        if banned in body:
+            raise SystemExit("G2/G3: " + name + " must not use an outbound ATAK dispatch: " + banned)
+if "getInternalDispatcher()" not in (host_dir / "AtakCotBridge.java").read_text():
+    raise SystemExit("G3: room messages must go through the internal dispatcher")
+if "new IpConnector" in chat_room or "new GeoChatConnector" in chat_room or "NetConnectString" in chat_room:
+    raise SystemExit("G1: the room contact must have no network connector")
+if "new PluginConnector(" not in chat_room:
+    raise SystemExit("G1: the room contact needs a PluginConnector so ATAK can open its chat")
+if "registerCommsLogger(roomLogger)" not in text or "unregisterCommsLogger(roomLogger)" not in text:
+    raise SystemExit("G1: the logger must be registered with the room and unregistered with it")
+stop_body = text[text.index("public void onStop()"):text.index("private ToolbarItem buildToolbar()")]
+if "removeRoom()" not in stop_body:
+    raise SystemExit("G1: onStop must remove the room and the logger")
+if "engine.roomSpec()" not in text or "room.reconcile(" not in text:
+    raise SystemExit("G1: the room must follow Engine.roomSpec()")
+if "Cot.roomChat(" not in chat_room or "AtakCotBridge.publish(" not in chat_room:
+    raise SystemExit("G3: incoming messages must be shown through the room")
+cot_src = (root / "src/main/java/dev/meshcore/atak/cot/Cot.java").read_text()
+room_chat = cot_src[cot_src.index("public static String roomChat("):cot_src.index("public static String receipt(")]
+if "(MeshCore, unverified)" in room_chat or "__meshcore" not in room_chat:
+    raise SystemExit("G3: roomChat must carry the loop marker; the label comes from RoomMessage.senderLabel()")
+if 'LABEL = "(MeshCore, unverified)"' not in engine_src:
+    raise SystemExit("G3: the unverified label is missing")
 manifest_text = manifest.read_text()
 if "@mipmap/ic_launcher" not in manifest_text or "ic_meshcore" in manifest_text:
     raise SystemExit("manifest icon is not the png mipmap")

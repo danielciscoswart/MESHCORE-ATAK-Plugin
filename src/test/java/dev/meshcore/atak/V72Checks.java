@@ -109,8 +109,8 @@ final class V72Checks {
         // Position cannot be switched on with no channel.
         engine.setLocationOptIn(true);
         check(!engine.locationOptIn());
-        check(!engine.setGeoChatCopy(true));
-        check(!engine.geoChatCopyOptIn());
+        // v7.3 (G2): the GeoChat copy path is gone, so there is no copy opt-in to refuse.
+        eq(null, engine.roomSpec());
         // Rows list the private channels and the refused ones with a reason, and the empty count.
         List<Engine.ChannelRow> rows = engine.channelRows();
         eq(4, rows.size());
@@ -130,15 +130,13 @@ final class V72Checks {
         eq("OK", engine.selectChannel(1).status);
         engine.setLocationOptIn(true);
         check(engine.locationOptIn());
-        check(engine.setGeoChatCopy(true));
         engine.setPluginOnlyChat(false);
         // Choosing the same channel again changes nothing.
         eq("OK", engine.selectChannel(1).status);
-        check(engine.locationOptIn() && engine.geoChatCopyOptIn() && !engine.pluginOnlyChat());
+        check(engine.locationOptIn() && !engine.pluginOnlyChat());
         // A different channel turns everything off and the chat switch goes back to ON.
         eq("OK", engine.selectChannel(3).status);
         check(!engine.locationOptIn());
-        check(!engine.geoChatCopyOptIn());
         check(engine.pluginOnlyChat());
         // Refused channels do not change the choice.
         eq("REFUSED_PUBLIC", engine.selectChannel(0).status);

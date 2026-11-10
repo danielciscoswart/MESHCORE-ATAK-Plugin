@@ -77,6 +77,25 @@ public final class AllTests {
         test("F1 queues and self info cleared on link", V72Checks::f1QueuesAndSelfClearedOnLink);
         test("F2 no-answer wording", V72Checks::f2NoAnswerWording);
         test("F2 cmd 3 and 62 never retried after timeout or error", V72Checks::f2SendsAreNeverRetried);
+        test("G1 room follows channel and mode", V73Checks::g1RoomFollowsChannelAndMode);
+        test("G1 room name is clean and capped", V73Checks::g1RoomNameIsCleanAndCapped);
+        test("G2 only the room transmits", V73Checks::g2OnlyTheRoomTransmits);
+        test("G2 stale or missing room never sends", V73Checks::g2StaleOrMissingRoomNeverSends);
+        test("G2 byte caps still apply", V73Checks::g2ByteCapsStillApply);
+        test("G2 Public channel never gets a room", V73Checks::g2PublicChannelNeverGetsARoom);
+        test("G3 inbound plugin chat goes to the room", V73Checks::g3InboundMctakChatGoesToTheRoom);
+        test("G3 native text on the chosen channel goes to the room", V73Checks::g3NativeTextOnTheChosenChannelGoesToTheRoom);
+        test("G3 pending room messages do not survive a channel change", V73Checks::g3PendingRoomMessagesDoNotSurviveAChannelChange);
+        test("G3 room event shape and loop marker", V73Checks::g3RoomEventShape);
+        test("G4 a message sent twice is sent once", V73Checks::g4SentTwiceIsSentOnce);
+        test("G4 marked event is caught on the way out", V73Checks::g4MarkedEventIsCaughtOnTheWayOut);
+        test("G4 same message over network and radio shows once", V73Checks::g4SameMessageOverNetworkAndRadioShowsOnce);
+        test("G4 same radio message twice shows once", V73Checks::g4SameRadioMessageTwiceShowsOnce);
+        test("G5 results are visible and never delivered", V73Checks::g5ResultsAreVisibleAndNeverDelivered);
+        test("radio pushes are counted and never logged", V73Checks::pushesAreCountedAndNeverLogged);
+        test("engine log is bounded", V73Checks::logIsBounded);
+        test("v7.2 safety still holds", V73Checks::v72SafetyStillHolds);
+        test("optional push codes vs official firmware", V73Checks::pushCodesMatchTheOfficialFirmware);
         test("optional mctak fixtures", AllTests::fixtures);
         test("optional official meshcore tree", TransportChecks::officialTree);
         System.out.println("PASSED " + passed + " FAILED " + failed + " SKIPPED " + skipped);
@@ -397,9 +416,12 @@ public final class AllTests {
 
         eq("QUEUED", a.sendChat(Mctak.SCOPE_DIRECT, bSender(b), "", "psst", t + 400_000).status);
         exchange(a, b, t + 400_000);
-        List<Engine.Inbound> chats = b.drainInbound();
-        check(chats.get(0).cot.contains("psst"));
-        check(chats.get(0).cot.contains("type=\"b-t-f\""));
+        // v7.3 (G3): plugin chat from the chosen channel goes to the MeshCore room, not to a
+        // general GeoChat event.
+        List<Engine.RoomMessage> chats = b.drainRoomMessages();
+        eq(1, chats.size());
+        eq("psst", chats.get(0).text);
+        check(chats.get(0).senderLabel().endsWith("(MeshCore, unverified)"));
         eq(1L, b.counters().get("receipt_delivered_queued"));
         eq(0L, b.counters().get("receipt_read_queued"));
         exchange(b, a, t + 400_000);

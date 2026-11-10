@@ -3,7 +3,6 @@ package dev.meshcore.atak.plugin;
 import dev.meshcore.atak.cot.Cot;
 import dev.meshcore.atak.engine.Engine;
 import dev.meshcore.atak.engine.SendReasons;
-import dev.meshcore.atak.mctak.Mctak;
 import dev.meshcore.atak.transport.RadioSession;
 
 import java.time.Instant;
@@ -72,6 +71,7 @@ public final class PluginHost {
     private final Map<String, Contact> contacts = new LinkedHashMap<>();
     private final List<ChatLine> chats = new ArrayList<>();
     private final List<Marker> markers = new ArrayList<>();
+    private final List<Engine.RoomMessage> roomMessages = new ArrayList<>();
     private Life life = Life.NEW;
     private String lastWhy = "";
 
@@ -138,6 +138,15 @@ public final class PluginHost {
             }
             ingest(inbound.cot, nowSeconds);
         }
+        for (Engine.RoomMessage message : engine.drainRoomMessages()) {
+            if (chats.size() >= CHAT_CAP) {
+                chats.remove(0);
+            }
+            chats.add(new ChatLine(message.senderLabel(), message.text, true));
+            if (roomMessages.size() < CHAT_CAP) {
+                roomMessages.add(message);
+            }
+        }
         refreshStale(nowSeconds);
         return published;
     }
@@ -170,7 +179,10 @@ public final class PluginHost {
             return engine.sendMarker(cot, nowMs).status;
         }
         if ("b-t-f".equals(type)) {
-            return offerChat(cot, nowMs);
+            // G2: a chat event with no destination is never sent. Only offerOutboundChat, which
+            // knows the destination uids, can reach the radio, and only for the MeshCore room.
+            engine.counters().inc("chat_other_ignored");
+            return "IGNORED";
         }
         return "UNSUPPORTED";
     }
@@ -220,28 +232,54 @@ public final class PluginHost {
         }
     }
 
-    private String offerChat(String cot, long nowMs) {
-        String text = remarks(cot);
-        String room = attr(cot, "chatroom");
-        int scope = Mctak.SCOPE_ROOM;
-        int dest = 0;
-        String roomName = room;
-        if (room.isEmpty() || "All Chat Rooms".equals(room)) {
-            scope = Mctak.SCOPE_ALL;
-            roomName = "";
-        } else if (room.startsWith("MCTAK-") && room.length() == "MCTAK-".length() + 8) {
-            try {
-                dest = (int) Long.parseLong(room.substring("MCTAK-".length()), 16);
-                scope = Mctak.SCOPE_DIRECT;
-                roomName = "";
-            } catch (NumberFormatException ex) {
-                lastWhy = "Not sent: unknown chat room id";
-                return "REFUSED";
-            }
+    /**
+     * G2: one chat message ATAK reported as sent, with the uids ATAK addressed it to. Only a
+     * message addressed to exactly the MeshCore room's uid can transmit. Everything else (all
+     * chat rooms, a TAK-server group, a person, a message with no destination list) is ignored
+     * and counted, and its text is not read. A message that carries this plugin's own marker is
+     * dropped as a loop. Returns the engine status ("QUEUED", ...), "IGNORED", "DROP_LOOP",
+     * "DUPLICATE", "STOPPED" or "REFUSED".
+     */
+    public String offerOutboundChat(String cot, String[] toUids, long nowMs) {
+        lastWhy = "";
+        if (life != Life.STARTED) {
+            lastWhy = SendReasons.STOPPED;
+            return "STOPPED";
         }
-        Engine.Send send = engine.sendChat(scope, dest, roomName, text, nowMs);
+        if (cot == null) {
+            engine.counters().inc("chat_other_ignored");
+            return "IGNORED";
+        }
+        if (Cot.hasMeshcoreLoopMarker(cot)) {
+            engine.counters().inc("cot_loop_dropped");
+            return "DROP_LOOP";
+        }
+        if (!"b-t-f".equals(attr(cot, "type"))) {
+            engine.counters().inc("chat_other_ignored");
+            return "IGNORED";
+        }
+        if (toUids == null || toUids.length != 1 || toUids[0] == null
+                || !toUids[0].startsWith(ROOM_UID_PREFIX)) {
+            engine.counters().inc("chat_other_ignored");
+            return "IGNORED";
+        }
+        if (cot.length() > COT_CAP) {
+            lastWhy = "Not sent: message could not be read";
+            return "REFUSED";
+        }
+        Engine.Send send = engine.sendFromRoom(toUids[0], attr(cot, "uid"), remarks(cot), nowMs);
         lastWhy = send.why;
         return send.status;
+    }
+
+    /** Prefix of every room uid. Only a destination that starts with it is looked at. */
+    public static final String ROOM_UID_PREFIX = "MESHCORE-ROOM-";
+
+    /** G3: room messages the last {@link #pump} took from the engine. The caller shows them. */
+    public List<Engine.RoomMessage> takeRoomMessages() {
+        List<Engine.RoomMessage> out = new ArrayList<Engine.RoomMessage>(roomMessages);
+        roomMessages.clear();
+        return out;
     }
 
     /**

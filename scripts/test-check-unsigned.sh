@@ -45,7 +45,7 @@ if [[ "$mode" == badging ]]; then
     cat "$apk.badging"
     exit 0
   fi
-  echo "package: name='dev.meshcore.atak.plugin' versionCode='9' versionName='0.7.2'"
+  echo "package: name='dev.meshcore.atak.plugin' versionCode='10' versionName='0.7.3'"
   echo "minSdkVersion:'21'"
   echo "targetSdkVersion:'36'"
   exit 0
@@ -82,7 +82,7 @@ make_apk "$WORK/signed"
 (cd "$WORK/signed" && zip -q "$WORK/signed.apk" META-INF/CERT.SF)
 fail_if_zero "signature block" env -u ANDROID_HOME -u ANDROID_SDK_ROOT AAPT2="$WORK/aapt2" "$CHECK" "$WORK/signed.apk"
 
-printf "%s\n" "package: name='com.example.other' versionCode='9' versionName='0.7.2'" "minSdkVersion:'21'" "targetSdkVersion:'36'" >"$WORK/good.apk.badging"
+printf "%s\n" "package: name='com.example.other' versionCode='10' versionName='0.7.3'" "minSdkVersion:'21'" "targetSdkVersion:'36'" >"$WORK/good.apk.badging"
 fail_if_zero "wrong package" env -u ANDROID_HOME -u ANDROID_SDK_ROOT AAPT2="$WORK/aapt2" "$CHECK" "$WORK/good.apk"
 rm -f "$WORK/good.apk.badging"
 

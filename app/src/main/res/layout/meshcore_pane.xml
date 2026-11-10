@@ -167,14 +167,15 @@
                 android:text="@string/chat_hint_long"
                 android:textSize="11sp" />
 
-            <CheckBox
-                android:id="@+id/meshcore_watch"
+            <Button
+                android:id="@+id/meshcore_open_chat"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:visibility="gone"
-                android:checked="false"
-                android:text="@string/watch_geochat"
-                android:textSize="12sp" />
+                android:minHeight="40dp"
+                android:enabled="false"
+                android:textAllCaps="false"
+                android:textSize="12sp"
+                android:text="@string/open_chat" />
 
             <TextView
                 android:id="@+id/meshcore_inbox"

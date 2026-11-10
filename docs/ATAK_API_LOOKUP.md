@@ -70,3 +70,42 @@ Still not confirmed by that javadoc, so the next compile or a device test has to
 ## Play Store 5.6.0.12
 
 No public changelog was found that lists plugin APIs added between Play Store ATAK-CIV 5.6.0.12 and the 5.6.0.26 SDK archive. The calls above are present in the 4.6.0.5 public source or in a published 5.4 plugin. `BitmapFactory.decodeResource` and `android.graphics.Bitmap.createBitmap` are platform APIs, not ATAK APIs. `Resources.getDrawable(int)` is no longer called. That does not prove a plugin built with the 5.6.0.26 SDK loads in 5.6.0.12. The published 5.5 sample still passes a PNG drawable through `MarshalManager`. This tree does not, because that conversion was given a vector drawable and is a candidate for the constructor throw. Whether `MarshalManager` accepts `android.graphics.Bitmap` was not in the javadoc notes above. A null result skips the toolbar item and does not leave the constructor.
+
+
+## v7.3 chat room (G7): every call checked against the 5.6.0.26 SDK
+
+Checked on 2026-11-09 on the box that holds the SDK, by listing the public signatures in `main.jar` with `javap -public` and by reading the bytecode of the send and receive paths with `javap -c`. No SDK file is in this repository or in any zip. The Play Store ATAK on the phone is 5.6.0.12; nothing below was run on it. A signature that exists in 5.6.0.26 is not proof that it behaves the same in 5.6.0.12. The plugin is also compiled against the 5.6.0.26 `main.jar` with `javac` (class files only, no APK) to prove the calls type-check.
+
+### Signatures that exist (all confirmed)
+
+| Call used by v7.3 | Signature in 5.6.0.26 |
+| --- | --- |
+| `Contacts.getInstance()` | `public static synchronized Contacts getInstance()` |
+| `Contacts.addContact(Contact)` / `removeContact(Contact)` | `public void addContact(Contact)` (adds to the root group), `public void removeContact(Contact)` |
+| `new IndividualContact(String name, String uid)` | `public IndividualContact(String, String)`. The bytecode passes the two arguments on in the order name, uid |
+| `IndividualContact.addConnector(Connector)` | `public boolean addConnector(Connector)` |
+| `IndividualContact.current()` | `public void current()` (marks the contact as present) |
+| `Contact.setName(String)` and `Contact.dispatchChangeEvent()` | both public on `Contact` |
+| `new PluginConnector(String)` | `public PluginConnector(String)`. `CONNECTOR_TYPE` is `connector.plugin` |
+| `ChatManagerMapComponent.getInstance()` | `public static ChatManagerMapComponent getInstance()` |
+| `ChatManagerMapComponent.openConversation(IndividualContact, boolean)` | public. It opens the chat only when the contact has an IP connect string or a `connector.plugin` connector, so the room gets a `PluginConnector` and no network connector |
+| `CommsMapComponent.registerCommsLogger` / `unregisterCommsLogger` | `public void ...(CommsLogger)` |
+| `CommsLogger.logSend(CotEvent, String[])`, `logSend(CotEvent, String)`, `logReceive(CotEvent, String, String)`, `dispose()` | all abstract and public |
+| `CotMapComponent.getInternalDispatcher()` and `CotDispatcher.dispatch(CotEvent)` | public static / public final. The external dispatcher is never used (a source check enforces it) |
+| `MapView.getDeviceUid()` (static) and `getDeviceCallsign()` | public |
+| `CotEvent.getType()`, `toString()`, `findDetail(String)`; `CotDetail.getAttribute(String)`, `getInnerText()` | public |
+
+### What the bytecode says about sending (read, not run)
+
+1. `ChatManagerMapComponent.sendMessage(Bundle, String[] toUids)` resolves each uid with `Contacts.getContactByUuid` and calls `GeoChatService.sendMessage(Bundle, List<IndividualContact>)`.
+2. That method sends to every contact through the external dispatcher's `dispatchToContacts`, except when a contact has the extra `fakeGroup` (the "All Chat Rooms" contact), which goes to `dispatchToBroadcast`. The room is not that contact.
+3. `CommsMapComponent.sendCoT(List, CotEvent, String[] toUids, CoTSendMethod)` keeps a uid only when commo knows the contact, or when the comms provider has the feature `UNKNOWN_CONTACT`. Otherwise it logs "Send to unknown contact" and leaves the uid out. `DefaultCommsProvider` has these features: `MISSION_PACK_SETTINGS`, `ENDPOINT_SUPPORT`, `FILE_IO`, `INTERFACE_OPTIONS`, `CRYPTO`, `VPN`. `UNKNOWN_CONTACT` is not one of them.
+4. After the send call, if no exception was thrown, every registered `CommsLogger` gets `logSend(event, toUids)` with the full uid array. This is the hook the room uses.
+
+### What is still unverified (the phone test G6 must answer these)
+
+- Whether commo's `sendCoT` with an empty recipient list sends nothing and does not throw. If it throws, ATAK catches it ("Invalid cot message for unicast") and the logger is never called, so a message typed into the room would be lost silently. The phone test shows this at once: a typed message must produce the plugin's "Queued for the radio" or a refusal sentence.
+- Whether any copy of a room message reaches the TAK server or the local network on 5.6.0.12. The bytecode above says no for the default provider; only a packet check on the phone can prove it.
+- Whether ATAK's chat window lets the user type into a contact that has only a `PluginConnector`, and whether the contact list hides it.
+- Whether the injected event shape (`__chat` with `id` = this device's uid, the room contact as `chatgrp uid0` and `link` `p-p`) files the message under the room contact. This follows `ChatMessageParser`, which takes the conversation from the sender contact when `id` equals the device uid, but it was not run.
+- Behaviour of all of the above on Play Store 5.6.0.12.

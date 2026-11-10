@@ -62,6 +62,34 @@ public final class Cot {
         return event(uid, "b-t-f", "m-g", time, time + Mctak.PLI_STALE_S, 0, 0, 9999999.0, detail);
     }
 
+    /**
+     * G3: one incoming message for the dedicated MeshCore room, shaped like a one-to-one GeoChat
+     * message from the room's contact to this device, so ATAK files it under that contact. The
+     * room contact is the sender as far as ATAK is concerned; the real sender is written into the
+     * text, always with the "(MeshCore, unverified)" label, so the label cannot be lost whatever
+     * the chat window prints as a name. The event carries the {@code __meshcore} marker, is meant
+     * for the internal dispatcher only, and is never copied out again.
+     *
+     * @param roomUid  uid of the room contact
+     * @param roomName current title of the room contact
+     * @param selfUid  this device's uid ({@code MapView.getDeviceUid()})
+     * @param senderLabel sender with the label, for example "Ana (MeshCore, unverified)"
+     */
+    public static String roomChat(String roomUid, String roomName, String selfUid, String selfCallsign,
+                                  String senderLabel, String text, String messageKey, long nowSeconds) {
+        String uid = "MESHCORE-ROOM-MSG-" + Long.toHexString(messageKey == null ? 0L
+                : (messageKey.hashCode() & 0xFFFFFFFFL)) + "-" + nowSeconds;
+        String detail = "<__chat parent=\"RootContactGroup\" groupOwner=\"false\" messageId=\"" + esc(uid)
+                + "\" chatroom=\"" + esc(selfCallsign) + "\" id=\"" + esc(selfUid)
+                + "\" senderCallsign=\"" + esc(roomName) + "\"><chatgrp uid0=\"" + esc(roomUid)
+                + "\" uid1=\"" + esc(selfUid) + "\" id=\"" + esc(selfUid) + "\"/></__chat>"
+                + "<link uid=\"" + esc(roomUid) + "\" type=\"a-f-G-U-C\" relation=\"p-p\"/>"
+                + "<remarks source=\"" + esc(roomUid) + "\" to=\"" + esc(selfUid) + "\" time=\""
+                + iso(nowSeconds) + "\">" + esc(senderLabel + ": " + text) + "</remarks>"
+                + "<__meshcore unverified=\"true\"/>";
+        return event(uid, "b-t-f", "m-g", nowSeconds, nowSeconds + Mctak.PLI_STALE_S, 0, 0, 9999999.0, detail);
+    }
+
     public static String receipt(int rtype, int sender, int msgId, long nowSeconds) {
         String type = rtype == 2 ? "b-t-f-r" : "b-t-f-d";
         String uid = "MCTAK.receipt." + dev.meshcore.atak.util.Bytes.hex8(sender) + "."

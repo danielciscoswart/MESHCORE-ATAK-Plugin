@@ -6,7 +6,7 @@
     <string name="connect">CONNECT</string>
     <string name="disconnect">DISCONNECT</string>
     <string name="copy_diag">COPY DIAG</string>
-    <string name="status_line_idle">v7.2 | starting</string>
+    <string name="status_line_idle">v7.3 | starting</string>
     <string name="opt_in">Send my position</string>
     <string name="opt_out">Stop sending position</string>
     <string name="room_hint">Room name. Empty sends all-chat on the chosen channel.</string>
@@ -18,5 +18,5 @@
     <string name="choose_channel">Choose channel</string>
     <string name="channels_none">Channels: connect first. Nothing is chosen for you.</string>
     <string name="inbox_none">MeshCore messages (unverified): none yet.</string>
-    <string name="watch_geochat">Experimental: also copy ATAK GeoChat. Default off. Untested. Not a private radio path.</string>
+    <string name="open_chat">OPEN MESHCORE CHAT (choose a channel first)</string>
 </resources>
