@@ -77,8 +77,8 @@ require_line() {
 }
 
 require_line "$badging" "package: name='${PACKAGE_NAME}'" "package name"
-require_line "$badging" "versionCode='1'" "versionCode"
-require_line "$badging" "versionName='0.2-source'" "versionName"
+require_line "$badging" "versionCode='8'" "versionCode"
+require_line "$badging" "versionName='0.7.1-v7'" "versionName"
 require_line "$badging" "minSdkVersion:'21'" "minSdkVersion"
 require_line "$badging" "targetSdkVersion:'36'" "targetSdkVersion"
 require_line "$xmltree" "${PACKAGE_NAME}" "manifest package in xmltree"
@@ -99,5 +99,5 @@ if ! grep -q "impl=\"${PLUGIN_CLASS}\"" "$tmp/assets/plugin.xml"; then
 fi
 rm -rf "$tmp"
 
-echo "unsigned release: ${PACKAGE_NAME} versionName 0.2-source keeps ${PLUGIN_CLASS}"
+echo "unsigned release: ${PACKAGE_NAME} versionName 0.7.1-v7 keeps ${PLUGIN_CLASS}"
 echo "aapt2=${AAPT2_BIN}"

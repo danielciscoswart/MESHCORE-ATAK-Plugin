@@ -64,3 +64,9 @@ Measured artifact, not stored in git:
 `apksigner verify` rejected it with `Missing META-INF/MANIFEST.MF`. That is the unsigned result. No signature block was present. No key was used. It was not installed. A debug signature is not a retail ATAK load. The development-core mapping warning still means this is not a Product Center build.
 
 `scripts/check-unsigned-release.sh` on that APK exited 1 with `manifest package string dev.meshcore.atak.plugin not found`. It grepped the compiled binary manifest as text. `aapt2` already showed the package. The script now requires `aapt2 dump badging` and `aapt2 dump xmltree`, and exits 1 when `aapt2` is missing. `scripts/test-check-unsigned.sh` rejects a wrong package, a signature block, a missing dex name, a wrong `plugin.xml`, and a missing `aapt2`. Those fixtures are not the measured APK. The Java sources that produce the payload were not changed for this verifier fix.
+
+## Field load of pipeline build 50753
+
+TAK Third Party Pipeline built and signed commit `26ecc66` as build 50753, signer TAK Product Center ATAK Untrusted Plugin Release. Sideload on a Galaxy S24 Ultra, Android 16, Play Store ATAK-CIV 5.6.0.12. Package Management listed MeshCore ATAK, status Not loaded, availability Current, blue shield. Toast: Failed to load MeshCore ATAK. No logcat was captured. Public CIV wording treats Not loaded as past the signature and plugin-api checks. The constructor in that commit called `PluginHost.onCreate`, constructed the GATT link, read `mctak-seq.txt`, and marshaled a vector drawable. Any throw there fails the load before `onStart`.
+
+The following source change moves that work into `onStart` under `catch (Throwable)` and replaces the vector icon. It has not been assembled, signed, or installed. `./scripts/test.sh` does not load ATAK. A device log with tag `MeshCoreAtak` is still required before claiming the plugin loads on 5.6.0.12.

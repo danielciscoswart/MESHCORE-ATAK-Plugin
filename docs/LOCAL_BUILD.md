@@ -72,3 +72,7 @@ From the repository root, with JDK 21:
 ```
 
 Unset `MESHCORE_TAK_FIXTURES` and `MESHCORE_ROOT` skips those two checks. A skip is not a pass.
+
+## Mapping caveat (why 26ecc66 and 61102ce did not load)
+
+A release ATAK is obfuscated. The pipeline copies ATAK's mapping and takdev sets the system property `atak.proguard.mapping`, but R8 only applies it when the rules file says `-applymapping <atak.proguard.mapping>`. Builds 50753 and 50884 lacked that line, so the dex named `gov.tak.api.plugin.IServiceController` while the installed ATAK only has the obfuscated class. A local SDK build has an empty `mapping.txt`, so it cannot show the problem. Run `scripts/check-ctor-mapped.sh` on the APK the pipeline returns. It must PASS.
