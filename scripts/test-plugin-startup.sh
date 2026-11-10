@@ -92,8 +92,8 @@ if "getFilesDir" in text or "selectFirstTeamChannel" in text or "selectFirstTeam
     raise SystemExit("plugin must not use getFilesDir (E3) or pick a channel itself (E2)")
 if text.count("restoreSequence()") < 1 or "restoreSequence()" not in onstart:
     raise SystemExit("onStart must restore the sequence (E3)")
-if 'BUILD_TAG = "v7.4"' not in text:
-    raise SystemExit("on-screen tag must be v7.4")
+if 'BUILD_TAG = "v7.5"' not in text:
+    raise SystemExit("on-screen tag must be v7.5")
 root = java.parents[8]
 engine_src = (root / "src/main/java/dev/meshcore/atak/engine/Engine.java").read_text()
 if "selectFirstTeamChannel" in engine_src:
@@ -175,8 +175,9 @@ if "(MeshCore, unverified)" in room_chat or "__meshcore" not in room_chat:
 if 'LABEL = "(MeshCore, unverified)"' not in engine_src:
     raise SystemExit("G3: the unverified label is missing")
 # v7.3H checks
-if "BoundedHold" not in logger or "pending.removeFirst" in logger or "pending.pollFirst" in logger:
-    raise SystemExit("H3: the outbound hold must refuse a new message when full, not drop an old one")
+# v7.5: the H3 BoundedHold was dead code after v7.4 (the logger queues nothing); it is gone.
+if "BoundedHold" in logger or (root / "src/main/java/dev/meshcore/atak/plugin/BoundedHold.java").exists():
+    raise SystemExit("v7.5: the unused H3 BoundedHold must stay removed")
 # v7.4 (J1): there is no outbound hold any more; the engine's own queue limit refuses with a sentence,
 # and handleRoomSend shows every refusal.
 if "handleRoomSend(" not in text or "host.offerRoomChat(" not in text:

@@ -6,7 +6,7 @@
     <string name="connect">CONNECT</string>
     <string name="disconnect">DISCONNECT</string>
     <string name="copy_diag">COPY DIAG</string>
-    <string name="status_line_idle">v7.4 | starting</string>
+    <string name="status_line_idle">v7.5 | starting</string>
     <string name="opt_in">Send my position</string>
     <string name="opt_out">Stop sending position</string>
     <string name="room_hint">Room name. Empty sends all-chat on the chosen channel.</string>

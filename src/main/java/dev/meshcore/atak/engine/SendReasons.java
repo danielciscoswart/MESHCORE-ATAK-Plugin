@@ -11,6 +11,8 @@ public final class SendReasons {
     public static final String NO_FIX = "Not sent: no GPS fix yet";
     public static final String STOPPED = "Not sent: plugin is stopped";
     public static final String EMPTY_TEXT = "Not sent: type some text first";
+    /** v7.5: ATAK handed over a message id that was already queued once. */
+    public static final String ALREADY_QUEUED = "Not sent again: that message was already queued";
 
     /**
      * The radio accepted the frame. That is all it says: it is not a delivery

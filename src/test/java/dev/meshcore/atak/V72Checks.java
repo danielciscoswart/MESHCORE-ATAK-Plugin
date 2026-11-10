@@ -298,6 +298,9 @@ final class V72Checks {
                         : Companion.channelInfo(idx, "", new byte[16]), now);
             } else if (op == Companion.CMD_GET_STATS) {
                 session.onNotification(Companion.statsCore(3900, 1_000L, 0, 0), now);
+            } else if (op == Companion.CMD_SYNC_NEXT) {
+                // v7.5: the session drains the radio's queue once when it becomes READY.
+                session.onNotification(new byte[] {(byte) Companion.PACKET_NO_MORE_MESSAGES}, now);
             } else {
                 throw new AssertionError("unexpected command " + op);
             }

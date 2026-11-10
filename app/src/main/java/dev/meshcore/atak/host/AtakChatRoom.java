@@ -20,6 +20,16 @@ import dev.meshcore.atak.engine.Engine;
  * changes and removed when the channel, the radio or the link goes away, and when the plugin
  * stops. A mode switch renames it.
  *
+ * <p>v7.5: when a mode switch or a channel change replaces the room's uid, the old contact is not
+ * deleted but kept as "(closed) ...", with the same uid and the same PluginConnector, until a link
+ * loss, the plugin stopping, the same uid coming back, or {@link #MAX_CLOSED} newer ones pushing
+ * it out. ATAK's chat window for the old uid stays
+ * open (the 5.6.0.26 chat API has no public way to close it), and with the contact gone ATAK
+ * accepted typed text ("Me:") and delivered it to nobody. With the closed contact in place the
+ * typed text reaches {@link RoomSendReceiver}, the engine refuses it as an old room
+ * ({@link Engine#ROOM_CLOSED_WHY}, counter room_send_stale) and the user sees a toast. Nothing is
+ * ever sent from a closed contact.
+ *
  * <p>Every call here runs on the main thread (the plugin tick or a button).
  */
 final class AtakChatRoom {
@@ -34,9 +44,17 @@ final class AtakChatRoom {
      */
     static final String CONNECTOR_ACTION = "dev.meshcore.atak.plugin.ROOM_SEND_MESSAGE";
 
+    /** v7.5: prefix of a replaced room's name. */
+    static final String CLOSED_PREFIX = "(closed) ";
+
+    /** v7.5: closed contacts kept at most. A room's uid is channel slot, name hash and mode. */
+    static final int MAX_CLOSED = 6;
+
     private IndividualContact contact;
     private String uid = "";
     private String name = "";
+    /** v7.5: replaced rooms, renamed, oldest first, so a window left open still reaches the plugin. */
+    private final java.util.ArrayList<IndividualContact> closed = new java.util.ArrayList<IndividualContact>();
 
     /** True while a room contact is registered with ATAK. */
     boolean present() {
@@ -51,6 +69,11 @@ final class AtakChatRoom {
         return name;
     }
 
+    /** v7.5: how many "(closed)" contacts from replaced rooms are registered. */
+    int closedCount() {
+        return closed.size();
+    }
+
     /**
      * Make ATAK match {@code spec}: null removes the room. Returns true when the set of rooms
      * changed (added or removed), so the caller can register or unregister the comms logger.
@@ -58,14 +81,17 @@ final class AtakChatRoom {
     boolean reconcile(Engine.RoomSpec spec) {
         if (spec == null) {
             if (contact == null) {
-                return false;
+                boolean hadClosed = !closed.isEmpty();
+                removeAllClosed();
+                return hadClosed;
             }
             remove();
             return true;
         }
         if (contact != null && !uid.equals(spec.uid)) {
-            remove();
+            close();
         }
+        removeClosedWithUid(spec.uid); // back to a closed uid (a mode switched back): the real room replaces it
         if (contact == null) {
             IndividualContact created = new IndividualContact(spec.name, spec.uid);
             created.addConnector(new PluginConnector(CONNECTOR_ACTION));
@@ -84,7 +110,43 @@ final class AtakChatRoom {
         return false;
     }
 
+    /**
+     * v7.5: the current room is being replaced. Keep it as a renamed "(closed)" contact so a chat
+     * window left open for it does not swallow typed text silently. At most {@link #MAX_CLOSED}
+     * are kept; the oldest goes first.
+     */
+    private void close() {
+        IndividualContact old = contact;
+        if (old == null) {
+            return;
+        }
+        old.setName(CLOSED_PREFIX + name);
+        old.dispatchChangeEvent();
+        closed.add(old);
+        while (closed.size() > MAX_CLOSED) {
+            Contacts.getInstance().removeContact(closed.remove(0));
+        }
+        contact = null;
+        uid = "";
+        name = "";
+    }
+
+    private void removeClosedWithUid(String wanted) {
+        for (int i = closed.size() - 1; i >= 0; i--) {
+            if (closed.get(i).getUID().equals(wanted)) {
+                Contacts.getInstance().removeContact(closed.remove(i));
+            }
+        }
+    }
+
+    private void removeAllClosed() {
+        while (!closed.isEmpty()) {
+            Contacts.getInstance().removeContact(closed.remove(closed.size() - 1));
+        }
+    }
+
     void remove() {
+        removeAllClosed();
         IndividualContact old = contact;
         contact = null;
         uid = "";

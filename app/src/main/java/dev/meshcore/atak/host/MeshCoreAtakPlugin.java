@@ -54,7 +54,7 @@ import gov.tak.platform.marshal.MarshalManager;
 public final class MeshCoreAtakPlugin implements IPlugin {
     static final String TAG = "MeshCoreAtak";
     /** Shown at the start of the status line so the installed build is obvious. */
-    static final String BUILD_TAG = "v7.4";
+    static final String BUILD_TAG = "v7.5";
 
     private final IServiceController serviceController;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -70,6 +70,9 @@ public final class MeshCoreAtakPlugin implements IPlugin {
     private RoomSendReceiver roomSendReceiver;
     private boolean roomSendReceiverRegistered;
     private long roomRetryAtMs;
+    /** v7.5: the logger is optional for the room; retry its registration now and then. */
+    private long loggerRetryAtMs;
+    private boolean loggerFailureCounted;
     private Engine.RoomSpec roomSpecShown;
     private Pane pane;
     private TextView status;
@@ -1170,7 +1173,7 @@ public final class MeshCoreAtakPlugin implements IPlugin {
 
     /** Keep ATAK's contact list in step with the engine: one room while a channel is chosen. */
     private void reconcileRoom(long now) {
-        if (host == null || roomLogger == null) {
+        if (host == null) {
             return;
         }
         Engine engine = host.engine();
@@ -1183,13 +1186,14 @@ public final class MeshCoreAtakPlugin implements IPlugin {
             boolean changed = room.reconcile(spec);
             roomSpecShown = spec;
             if (changed && room.present()) {
-                if (!setRoomLogger(true)) {
-                    // A room that nobody listens to would let a message vanish silently.
+                if (!setRoomListeners(true)) {
+                    // A room that nobody listens to would let a message vanish silently. The send
+                    // receiver is what listens (v7.5: the comms logger is not needed for that).
                     room.remove();
                     roomSpecShown = null;
                     roomRetryAtMs = now + 5_000L;
-                    engine.counters().inc("room_logger_unavailable");
-                    refuse("MeshCore chat room unavailable: ATAK comms not ready");
+                    engine.counters().inc("room_receiver_unavailable");
+                    refuse("MeshCore chat room unavailable: ATAK chat not ready");
                     return;
                 }
                 // H2: when only the mode changed, say who can read what is typed now.
@@ -1198,7 +1202,11 @@ public final class MeshCoreAtakPlugin implements IPlugin {
                 lastSendNote = text;
                 setTransient(text);
             } else if (changed) {
-                setRoomLogger(false);
+                setRoomListeners(false);
+            } else if (room.present() && !roomLoggerRegistered && now >= loggerRetryAtMs) {
+                // v7.5: the room works without the logger; try to bring the logger up later.
+                loggerRetryAtMs = now + 10_000L;
+                setRoomListeners(true);
             }
         } catch (Throwable t) {
             Log.e(TAG, "room reconcile failed: " + t.getClass().getName());
@@ -1206,7 +1214,7 @@ public final class MeshCoreAtakPlugin implements IPlugin {
             roomSpecShown = null;
             try {
                 room.remove();
-                setRoomLogger(false);
+                setRoomListeners(false);
             } catch (Throwable ignored) {
                 Log.e(TAG, "room cleanup failed");
             }
@@ -1214,49 +1222,65 @@ public final class MeshCoreAtakPlugin implements IPlugin {
         }
     }
 
-    /** Take the room and its logger down. Safe to call twice. */
+    /** Take the room and its listeners down. Safe to call twice. */
     private void removeRoom() {
         roomSpecShown = null;
         try {
             room.remove();
         } finally {
-            setRoomLogger(false);
+            setRoomListeners(false);
         }
     }
 
-    private boolean setRoomLogger(boolean want) {
-        if (roomLogger == null) {
-            return false;
-        }
+    /**
+     * Register or unregister what the room needs. v7.5 (review of v7.4, item 5): the room is offered
+     * on the strength of the send receiver alone. The comms logger only feeds the duplicate check
+     * for chats ATAK received from the TAK server (G4) and counts other chats; it is registered
+     * when ATAK comms are available and its absence only turns that check off (counter
+     * room_logger_unavailable, "logger=false" in the diag). It never gates the room.
+     */
+    private boolean setRoomListeners(boolean want) {
         CommsMapComponent comms = null;
         try {
             comms = CommsMapComponent.getInstance();
         } catch (Throwable t) {
-            Log.e(TAG, "comms lookup failed", t);
+            Log.e(TAG, "comms lookup failed: " + t.getClass().getName());
         }
         if (want) {
-            if (roomLoggerRegistered && roomSendReceiverRegistered) {
-                return true;
-            }
-            if (comms == null) {
-                return false;
-            }
             // J1: the receiver is what makes typing in the room work. Without it the room is not offered.
             if (!registerSendReceiver()) {
                 return false;
             }
-            if (!roomLoggerRegistered) {
-                comms.registerCommsLogger(roomLogger);
-                roomLoggerRegistered = true;
+            if (!roomLoggerRegistered && roomLogger != null) {
+                boolean failed = comms == null;
+                if (!failed) {
+                    try {
+                        comms.registerCommsLogger(roomLogger);
+                        roomLoggerRegistered = true;
+                    } catch (Throwable t) {
+                        Log.e(TAG, "comms logger register failed: " + t.getClass().getName());
+                        failed = true;
+                    }
+                }
+                if (failed && host != null && !loggerFailureCounted) {
+                    loggerFailureCounted = true;
+                    host.engine().counters().inc("room_logger_unavailable");
+                }
             }
             return true;
         }
         unregisterSendReceiver();
-        if (roomLoggerRegistered && comms != null) {
-            comms.unregisterCommsLogger(roomLogger);
+        if (roomLoggerRegistered && comms != null && roomLogger != null) {
+            try {
+                comms.unregisterCommsLogger(roomLogger);
+            } catch (Throwable t) {
+                Log.e(TAG, "comms logger unregister failed: " + t.getClass().getName());
+            }
         }
         roomLoggerRegistered = false;
-        roomLogger.dispose();
+        if (roomLogger != null) {
+            roomLogger.dispose();
+        }
         return true;
     }
 

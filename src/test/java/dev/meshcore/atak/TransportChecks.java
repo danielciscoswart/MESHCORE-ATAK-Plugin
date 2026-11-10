@@ -262,6 +262,11 @@ final class TransportChecks {
         byte[] stats = link.pollWrite();
         check(stats != null && (stats[0] & 0xFF) == Companion.CMD_GET_STATS);
         link.onNotification(Companion.statsCore(3900, 1_000L, 0, 0), now + 720L);
+        // v7.5: READY also starts one drain of the radio's offline queue; this radio has nothing.
+        link.tick(now + 800L);
+        byte[] drain = link.pollWrite();
+        check(drain != null && (drain[0] & 0xFF) == Companion.CMD_SYNC_NEXT);
+        link.onNotification(new byte[] {(byte) Companion.PACKET_NO_MORE_MESSAGES}, now + 820L);
     }
 
     private static Engine ready(long now) {

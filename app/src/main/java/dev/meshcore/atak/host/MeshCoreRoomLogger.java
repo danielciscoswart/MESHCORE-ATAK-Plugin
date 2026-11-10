@@ -6,7 +6,6 @@ import com.atakmap.coremap.cot.event.CotEvent;
 
 import java.util.ArrayDeque;
 
-import dev.meshcore.atak.plugin.BoundedHold;
 import dev.meshcore.atak.plugin.PluginHost;
 
 /**
@@ -31,19 +30,7 @@ import dev.meshcore.atak.plugin.PluginHost;
  * the engine side drops it (loop guard).
  */
 final class MeshCoreRoomLogger implements CommsLogger {
-    static final int MAX_PENDING = 8;
     static final int MAX_NETWORK = 16;
-    static final int MAX_XML_CHARS = 8192;
-
-    static final class Outbound {
-        final String xml;
-        final String[] toUids;
-
-        Outbound(String xml, String[] toUids) {
-            this.xml = xml;
-            this.toUids = toUids;
-        }
-    }
 
     static final class NetworkChat {
         final String callsign;
@@ -55,7 +42,8 @@ final class MeshCoreRoomLogger implements CommsLogger {
         }
     }
 
-    private final BoundedHold<Outbound> pending = new BoundedHold<Outbound>(MAX_PENDING);
+    /** Guards the two counters below. The callbacks run on ATAK's comms thread. */
+    private final Object counts = new Object();
     private final ArrayDeque<NetworkChat> network = new ArrayDeque<NetworkChat>();
     private int ignoredOther;
     private int unexpectedRoomLogSend;
@@ -71,7 +59,7 @@ final class MeshCoreRoomLogger implements CommsLogger {
         // twice. Every other chat is counted and its text is not read.
         boolean room = toUids != null && toUids.length > 0 && toUids[0] != null
                 && toUids[0].startsWith(PluginHost.ROOM_UID_PREFIX);
-        synchronized (pending) {
+        synchronized (counts) {
             if (room) {
                 unexpectedRoomLogSend++;
             } else {
@@ -83,7 +71,7 @@ final class MeshCoreRoomLogger implements CommsLogger {
     @Override
     public void logSend(CotEvent message, String destination) {
         if (isChat(message)) {
-            synchronized (pending) {
+            synchronized (counts) {
                 ignoredOther++;
             }
         }
@@ -118,28 +106,18 @@ final class MeshCoreRoomLogger implements CommsLogger {
 
     @Override
     public void dispose() {
-        pending.clear();
         synchronized (network) {
             network.clear();
         }
     }
 
-    Outbound pollOutbound() {
-        return pending.poll();
-    }
-
     /** J1: room sends that arrived through the comms layer, which should never happen. */
     int takeUnexpectedRoomLogSend() {
-        synchronized (pending) {
+        synchronized (counts) {
             int n = unexpectedRoomLogSend;
             unexpectedRoomLogSend = 0;
             return n;
         }
-    }
-
-    /** H3: messages the user typed that did not fit the hold since the last call. */
-    int takeOverflow() {
-        return pending.takeRefused();
     }
 
     NetworkChat pollNetwork() {
@@ -150,7 +128,7 @@ final class MeshCoreRoomLogger implements CommsLogger {
 
     /** Chats seen with some other destination since the last call. */
     int takeIgnored() {
-        synchronized (pending) {
+        synchronized (counts) {
             int n = ignoredOther;
             ignoredOther = 0;
             return n;

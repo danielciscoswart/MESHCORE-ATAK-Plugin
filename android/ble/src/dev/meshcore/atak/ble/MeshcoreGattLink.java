@@ -1442,6 +1442,18 @@ public final class MeshcoreGattLink {
                 .append(" mctak_data=").append(engine.counters().get("mctak_data_rx"))
                 .append(" no_more_messages=").append(engine.counters().get("no_more_messages")).append('\n');
         sb.append("last native text: ").append(engine.lastNativeNote()).append('\n');
+        java.util.List<String> recent = engine.recentNativeNotes();
+        sb.append("recent native text (oldest first, no text): ").append(recent.isEmpty() ? "none" : "").append('\n');
+        for (String line : recent) {
+            sb.append("  ").append(line).append('\n');
+        }
+        sb.append("drain: started=").append(engine.counters().get("drain_started"))
+                .append(" complete=").append(engine.counters().get("drain_complete"))
+                .append(" frames=").append(engine.counters().get("drain_frames"))
+                .append(" extra_pass=").append(engine.counters().get("drain_extra_pass"))
+                .append(" cap_hit=").append(engine.counters().get("drain_cap_hit"))
+                .append(" timeout=").append(engine.counters().get("drain_timeout"))
+                .append(" dup_dropped=").append(engine.counters().get("room_msg_dup_dropped")).append('\n');
         Engine.RadioStats stats = engine.radioStats();
         if (stats == null) {
             sb.append("radio stats: none read yet (stats_unavailable=")

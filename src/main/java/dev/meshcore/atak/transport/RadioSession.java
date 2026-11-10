@@ -19,8 +19,13 @@ import java.util.List;
  *
  * <p>Inbound channel datagrams are not pushed whole. Official
  * {@code onChannelDataRecv} queues the frame and writes a one-byte
- * {@code PUSH_CODE_MSG_WAITING} ({@code MyMesh.cpp} lines 627–632). This
- * session answers that tickle with a single {@code CMD_SYNC_NEXT_MESSAGE}.
+ * {@code PUSH_CODE_MSG_WAITING} ({@code MyMesh.cpp} lines 627–632). v7.5: this
+ * session answers that tickle by draining the radio's offline queue: it sends
+ * {@code CMD_SYNC_NEXT_MESSAGE} again after every message until the radio replies
+ * {@code RESP_CODE_NO_MORE_MESSAGES} ({@code MyMesh.cpp} lines 1415-1423). v7.4 sent one
+ * and stopped, so the queue was only ever read one message per tickle and any backlog
+ * (a message queued before the link was up, a tickle the BLE send queue dropped) stayed
+ * behind. One drain runs at a time; a tickle that arrives during it asks for one more pass.
  */
 public final class RadioSession {
     private enum Phase { NEED_APP, NEED_DEVICE, NEED_CHANNELS, READY }
@@ -35,6 +40,12 @@ public final class RadioSession {
     private boolean writesEnabled = true;
     private boolean handshakeFailed;
     private boolean syncWanted;
+    /** v7.5: a drain pass is running: cmd 10 is sent after every message until "no more". */
+    private boolean drainActive;
+    /** v7.5: a tickle (0x83) arrived during the pass; run one more pass when this one ends. */
+    private boolean drainAgain;
+    /** v7.5: cmd 10 frames issued in the current pass, for the safety cap. */
+    private int drainSent;
     private boolean mtuLatched;
     private boolean statsWanted;
     private long lastNotificationMs;
@@ -141,6 +152,7 @@ public final class RadioSession {
         inflight = null;
         retryHold = null;
         statsWanted = false;
+        resetDrain();
         lastNotificationMs = 0L;
         engine.onLinkUp(nowMs);
         note("connected");
@@ -161,6 +173,7 @@ public final class RadioSession {
         handshakeFailed = false;
         handshakeRetries = 0;
         statsWanted = false;
+        resetDrain();
         int shift = Math.min(5, Math.max(0, backoffStep));
         long delay = Math.min(30_000L, 1000L << shift);
         backoffStep = Math.min(5, backoffStep + 1);
@@ -197,10 +210,7 @@ public final class RadioSession {
         }
         if (type >= 0x80) {
             if (type == Companion.PACKET_MESSAGES_WAITING) {
-                if (syncWanted) {
-                    engine.counters().inc("sync_coalesced");
-                }
-                syncWanted = true;
+                requestDrain();
             }
             engine.receiveFrame(frame, nowMs);
             return;
@@ -214,6 +224,9 @@ public final class RadioSession {
                 engine.onChannelDataReply(0);
             }
             noteSuccess(cmd, frame);
+            if ((cmd[0] & 0xFF) == Companion.CMD_SYNC_NEXT) {
+                onSyncReply(type);
+            }
             engine.receiveFrame(frame, nowMs);
             return;
         }
@@ -293,6 +306,11 @@ public final class RadioSession {
                 if (cmd == Companion.CMD_APP_START || cmd == Companion.CMD_DEVICE_QUERY
                         || cmd == Companion.CMD_GET_CHANNEL) {
                     retryHandshake(lost);
+                }
+                if (cmd == Companion.CMD_SYNC_NEXT) {
+                    // No answer: end the pass. The next tickle or the next READY starts a new one.
+                    engine.counters().inc("drain_timeout");
+                    resetDrain();
                 }
             }
             return;
@@ -401,6 +419,7 @@ public final class RadioSession {
         }
         if (syncWanted) {
             syncWanted = false;
+            drainSent++;
             return Companion.syncNext();
         }
         byte[] preview = engine.previewTx(nowMs);
@@ -469,6 +488,70 @@ public final class RadioSession {
         // E6: read uptime, battery and error flags once per READY. Read-only.
         statsWanted = true;
         note("session_ready");
+        // v7.5: the firmware sends a tickle only while a host is connected (MyMesh.cpp lines 469 and
+        // 585), so anything queued before this link came up has no tickle. Read it now.
+        requestDrain();
+    }
+
+    private void resetDrain() {
+        syncWanted = false;
+        drainActive = false;
+        drainAgain = false;
+        drainSent = 0;
+    }
+
+    /**
+     * v7.5: something may be waiting in the radio's queue (a tickle, or the link just became ready).
+     * Starts a drain pass, or, when one is already running, asks for one more pass after it.
+     */
+    private void requestDrain() {
+        if (drainActive) {
+            drainAgain = true;
+            engine.counters().inc("sync_coalesced");
+            return;
+        }
+        drainActive = true;
+        drainAgain = false;
+        drainSent = 0;
+        syncWanted = true;
+        engine.counters().inc("drain_started");
+    }
+
+    /**
+     * v7.5: the radio answered a CMD_SYNC_NEXT_MESSAGE. A message frame means "ask again"; the
+     * firmware's NO_MORE_MESSAGES means the queue is empty. Anything else (an error, an unknown
+     * code) ends the pass so a confused radio cannot keep this loop running.
+     */
+    private void onSyncReply(int type) {
+        if (!drainActive) {
+            return;
+        }
+        if (type == Companion.PACKET_NO_MORE_MESSAGES) {
+            engine.counters().inc("drain_complete");
+            boolean again = drainAgain;
+            drainActive = false;
+            drainAgain = false;
+            drainSent = 0;
+            if (again) {
+                engine.counters().inc("drain_extra_pass");
+                requestDrain();
+            }
+            return;
+        }
+        if (Companion.isNativeText(type) || type == Companion.PACKET_CHANNEL_DATA) {
+            engine.counters().inc("drain_frames");
+            if (drainSent >= RadioLimits.SYNC_DRAIN_CAP) {
+                engine.counters().inc("drain_cap_hit");
+                note("drain_cap_hit");
+                resetDrain();
+                return;
+            }
+            syncWanted = true;
+            return;
+        }
+        engine.counters().inc("drain_stopped_unexpected");
+        note("drain_stopped " + type);
+        resetDrain();
     }
 
     private void retryHandshake(byte[] cmd) {

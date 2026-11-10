@@ -43,6 +43,15 @@ public final class RadioLimits {
     /** Default {@code OFFLINE_QUEUE_SIZE} in companion {@code MyMesh.h}. Builds may override it. */
     public static final int DEFAULT_OFFLINE_QUEUE = 16;
     /**
+     * v7.5: most CMD_SYNC_NEXT_MESSAGE commands one drain pass will send. The firmware queue is
+     * {@code OFFLINE_QUEUE_SIZE} frames: 16 is only the fallback in {@code MyMesh.h} line 62. The
+     * companion builds set it in their {@code platformio.ini}: 256 in 147 of the 157 active settings in
+     * companion-v1.18.0, 128 in the other 10, and 256 for all four heltec_v4 companion envs. So
+     * 300 covers the largest queue plus a few frames that arrive during the pass. A radio that
+     * never says "no more messages" is cut off here and counted.
+     */
+    public static final int SYNC_DRAIN_CAP = 300;
+    /**
      * RP2040 companion drops a notify when {@code frame + 3 > mtu} and comments
      * that the client must negotiate {@code MTU >= MAX_FRAME_SIZE + 3}
      * ({@code src/helpers/rp2040/SerialBLEInterface.cpp} lines 122–125).

@@ -189,6 +189,11 @@ public final class Engine {
     public static final int ROOM_INBOX_CAP = 32;
     static final long ROOM_DEDUP_MS = 600_000L;
     static final long ROOM_SENT_FALLBACK_MS = 3_000L;
+    /** v7.5: inbound native text seen again inside this window is a repeat. */
+    static final long NATIVE_DEDUP_MS = 600_000L;
+    public static final int NATIVE_DEDUP_CAP = 128;
+    /** v7.5: how many recent native frames the diag lists (no text). */
+    public static final int NATIVE_RECENT_CAP = 8;
     static final long NETWORK_CHAT_WINDOW_MS = 300_000L;
     static final int ROOM_CHANNEL_NAME_CAP = 32;
 
@@ -231,6 +236,8 @@ public final class Engine {
     private final Map<Integer, Companion.ChannelView> channels = new LinkedHashMap<>();
     private Integer selected;
     private String lastNativeNote = "none";
+    private final java.util.ArrayDeque<String> recentNative = new java.util.ArrayDeque<>();
+    private final SeenLru nativeSeen = new SeenLru(NATIVE_DEDUP_CAP, NATIVE_DEDUP_MS);
     private boolean locationOptIn;
     private final List<NativeMessage> nativeInbox = new ArrayList<>();
     private final List<NativeMessage> nativeNew = new ArrayList<>();
@@ -537,6 +544,18 @@ public final class Engine {
         lastNativeNote = "frame=0x" + hex2(frame[0]) + " " + (parsed.direct ? "direct" : "channel=" + parsed.channel)
                 + " selected=" + (selected == null ? "none" : selected.toString())
                 + " path=" + parsed.pathLen + " bytes=" + frame.length;
+        // v7.5: a repeat (same channel or sender, same sender timestamp, same text) is dropped here,
+        // before the pane, the toast and the room, and counted. The firmware does not de-duplicate
+        // what it queues, and the companion document asks the host to do it. The key holds a
+        // channel or sender prefix, the sender's timestamp and a hash of the text; no text.
+        String dedupKey = (parsed.direct ? "d:" + parsed.senderPrefixHex : "c:" + parsed.channel)
+                + ":" + parsed.senderTimestamp + ":" + crc(parsed.text);
+        boolean repeat = !nativeSeen.firstTime(dedupKey, nowMs);
+        noteRecentNative(parsed, frame.length, repeat);
+        if (repeat) {
+            counters.inc("room_msg_dup_dropped");
+            return;
+        }
         NativeMessage message = new NativeMessage(parsed.direct, parsed.channel,
                 parsed.senderPrefixHex, displayText(parsed.text), nowMs);
         if (nativeInbox.size() >= NATIVE_INBOX_CAP) {
@@ -587,6 +606,27 @@ public final class Engine {
     /** J2: how the last native text frame was read (no text). */
     public String lastNativeNote() {
         return lastNativeNote;
+    }
+
+    /**
+     * v7.5: one line per recent native text frame, oldest first: slot or direct, the sender's
+     * timestamp (seconds), path length, size, the low 16 bits of a hash of the text (enough to see
+     * whether two lines carry the same text, not enough to recover it) and whether it was dropped
+     * as a repeat. Never the text. This is what tells a re-sent message (new timestamp) from a
+     * re-delivered one (same timestamp).
+     */
+    public List<String> recentNativeNotes() {
+        return new ArrayList<>(recentNative);
+    }
+
+    private void noteRecentNative(Companion.NativeText parsed, int bytes, boolean repeat) {
+        if (recentNative.size() >= NATIVE_RECENT_CAP) {
+            recentNative.removeFirst();
+        }
+        recentNative.addLast((parsed.direct ? "direct" : "ch" + parsed.channel) + " ts=" + parsed.senderTimestamp
+                + " path=" + parsed.pathLen + " bytes=" + bytes
+                + " txt16=" + String.format("%04x", crcValue(parsed.text) & 0xFFFF)
+                + (repeat ? " DUP" : ""));
     }
 
     /** The last {@link #NATIVE_INBOX_CAP} native messages, oldest first. */
@@ -1024,17 +1064,22 @@ public final class Engine {
         Long before = roomSentIds.get(key);
         if (before != null && (key.startsWith("id:") || nowMs - before <= ROOM_SENT_FALLBACK_MS)) {
             counters.inc("room_dup_out");
-            return new Send("DUPLICATE", "same message seen twice", "");
+            // v7.5: say so. A silent drop looked like a lost message when it was a retry.
+            return new Send("DUPLICATE", "same message seen twice", SendReasons.ALREADY_QUEUED);
         }
-        if (roomSentIds.size() >= 128) {
-            Iterator<String> it = roomSentIds.keySet().iterator();
-            it.next();
-            it.remove();
-        }
-        roomSentIds.put(key, nowMs);
         Send send = pluginOnlyChat
                 ? sendChat(Mctak.SCOPE_ALL, 0, "", text, nowMs)
                 : sendNativeChannelText(text, nowMs);
+        if ("QUEUED".equals(send.status)) {
+            // v7.5: the id is remembered only when the message was really queued. A refused send
+            // (no room, too long, governor) must not turn the user's retry into a silent duplicate.
+            if (roomSentIds.size() >= 128) {
+                Iterator<String> it = roomSentIds.keySet().iterator();
+                it.next();
+                it.remove();
+            }
+            roomSentIds.put(key, nowMs);
+        }
         counters.inc("QUEUED".equals(send.status) ? "room_send_queued" : "room_send_refused");
         return send;
     }

@@ -358,7 +358,8 @@ final class V73Checks {
         eq("QUEUED", host.offerOutboundChat(xml, new String[] {room}, now));
         eq("DUPLICATE", host.offerOutboundChat(xml, new String[] {room}, now + 50));
         eq("DUPLICATE", host.offerOutboundChat(xml, new String[] {room}, now + 60_000L));
-        eq("", host.lastWhy());
+        // v7.5: a repeat is no longer silent: the user is told why nothing new was queued.
+        eq(SendReasons.ALREADY_QUEUED, host.lastWhy());
         eq(1, drainAll(engine, now).size());
         eq(2L, engine.counters().get("room_dup_out"));
         // A different message with the same text is a different send.
@@ -417,7 +418,9 @@ final class V73Checks {
         engine.receiveFrame(frame.clone(), 2_000L);
         engine.receiveFrame(frame.clone(), 2_100L);
         eq(1, engine.drainRoomMessages().size());
-        eq(1L, engine.counters().get("room_dup_in"));
+        // v7.5: the repeat is dropped as soon as the frame is read, before the pane and the room.
+        eq(1L, engine.counters().get("room_msg_dup_dropped"));
+        eq(0L, engine.counters().get("room_dup_in"));
         // The same plugin chat twice (same sender and message id) shows once.
         byte[] chat = mctakChat(0x01020304, 9, 0x1010, Mctak.SCOPE_ALL, 0, "twice");
         engine.receiveFrame(Companion.channelDataRecv(4, 1, 1, Mctak.DATA_TYPE_DEV, chat), 3_000L);
@@ -606,37 +609,6 @@ final class V73Checks {
         eq(null, Engine.modeNotice(plugin, null));
         eq("OK", engine.selectChannel(3).status);
         eq(null, Engine.modeNotice(plugin, engine.roomSpec()));
-    }
-
-    static void h3FullHoldRefusesTheNewMessage() {
-        dev.meshcore.atak.plugin.BoundedHold<String> hold = new dev.meshcore.atak.plugin.BoundedHold<>(8);
-        for (int i = 1; i <= 8; i++) {
-            check(hold.offer("m" + i));
-        }
-        eq(0, hold.takeRefused());
-        // The ninth is refused and counted; nothing already held is dropped.
-        eq(false, hold.offer("m9"));
-        eq(false, hold.offer("m10"));
-        eq(2, hold.takeRefused());
-        eq(0, hold.takeRefused());
-        eq(8, hold.size());
-        eq("m1", hold.poll());
-        // Room again after one was taken.
-        check(hold.offer("m11"));
-        for (int i = 2; i <= 8; i++) {
-            eq("m" + i, hold.poll());
-        }
-        eq("m11", hold.poll());
-        eq(null, hold.poll());
-        // The host logger is the only user: it uses the hold, never removeFirst.
-        try {
-            String logger = new String(Files.readAllBytes(java.nio.file.Paths.get(
-                    "app/src/main/java/dev/meshcore/atak/host/MeshCoreRoomLogger.java")), StandardCharsets.UTF_8);
-            check(logger.contains("BoundedHold"));
-            check(!logger.contains("pending.removeFirst"));
-        } catch (java.io.IOException ex) {
-            // Run from another directory: the source check script covers this too.
-        }
     }
 
     static void h4ReceiptsAreNotChat() {
